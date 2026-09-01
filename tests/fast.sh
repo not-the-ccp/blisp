@@ -5,7 +5,7 @@ source tests/differential-lib.sh
 
 printf '%s\n' '[fast 1/3] shell syntax + include loader'
 bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
-./tests/includes.sh
+bash tests/includes.sh
 
 printf '%s\n' '[fast 2/3] focused interpreter/compiler suites (isolated, parallel)'
 suites=(operators ranges hygiene environment hashability callables grammar layout ergonomics)
