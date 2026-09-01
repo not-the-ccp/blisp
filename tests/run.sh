@@ -6,23 +6,27 @@ mkdir -p build
 printf '%s\n' '[1/5] shell syntax'
 bash -n blisp runtime.sh compiler.sh surface.sh layout.sh
 
-printf '%s\n' '[2/5] focused ergonomics + layout suites'
-./blisp run tests/ergonomics.blx
-./blisp run tests/layout.blx
+parity_suite() {
+  local name=$1 file=$2
+  local exe="build/${name}-test"
+  local interpreted="build/${name}-interpreted.out"
+  local compiled="build/${name}-compiled.out"
+  ./blisp run "$file" > "$interpreted"
+  ./blisp compile "$file" -o "$exe" >/dev/null
+  "$exe" > "$compiled"
+  cmp "$interpreted" "$compiled"
+  cat "$interpreted"
+  printf '%s\n' "$name interpreter/compiler outcome identical"
+}
 
-printf '%s\n' '[3/5] layout compiler parity'
-./blisp run tests/layout.blx > build/layout-interpreted.out
-./blisp compile tests/layout.blx -o build/layout-test >/dev/null
-./build/layout-test > build/layout-compiled.out
-cmp build/layout-interpreted.out build/layout-compiled.out
-printf '%s\n' 'layout interpreter/compiler output identical'
+printf '%s\n' '[2/5] ergonomics differential suite'
+parity_suite ergonomics tests/ergonomics.blx
 
-printf '%s\n' '[4/5] interpreted stdlib suite'
-./blisp run tests/stdlib.blx
+printf '%s\n' '[3/5] layout differential suite'
+parity_suite layout tests/layout.blx
 
-printf '%s\n' '[5/5] stdlib compiler parity'
-./blisp compile tests/stdlib.blx -o build/stdlib-test >/dev/null
-./build/stdlib-test > build/stdlib-compiled.out
-./blisp run tests/stdlib.blx > build/stdlib-interpreted.out
-cmp build/stdlib-interpreted.out build/stdlib-compiled.out
-printf '%s\n' 'stdlib interpreter/compiler output identical'
+printf '%s\n' '[4/5] parenthesis grammar differential suite'
+parity_suite grammar tests/grammar.blx
+
+printf '%s\n' '[5/5] standard-library differential suite'
+parity_suite stdlib tests/stdlib.blx

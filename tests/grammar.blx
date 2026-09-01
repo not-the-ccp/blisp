@@ -1,0 +1,68 @@
+include "../lib/testing.blx";
+
+let t = testing.suite("grammar");
+
+fn add2(a, b) { return a + b; }
+proto GrammarBox {
+  init(v) { this.v = v; }
+}
+
+fn _wordOperators() {
+  let o = {x: 1};
+  let a = [];
+  let b = new GrammarBox(1);
+  testing.equal((true or false), true, null);
+  testing.equal((true and false), false, null);
+  testing.equal((a is a), true, null);
+  testing.equal(("x" in o), true, null);
+  testing.equal((b instanceof GrammarBox), true, null);
+}
+t.test("identifier-spelled infix operators remain grouped", _wordOperators);
+
+fn _punctuationOperators() {
+  testing.equal((1 + 2 * 3), 7, null);
+  testing.equal((8 >> 1), 4, null);
+  testing.equal((null ?? 9), 9, null);
+  testing.equal((3 < 4), true, null);
+}
+t.test("punctuation infix operators remain grouped", _punctuationOperators);
+
+fn _sForms() {
+  testing.equal((add2 20 22), 42, null);
+  testing.equal((+ 20 22), 42, null);
+  testing.equal((and true true), true, null);
+}
+t.test("Lisp-style application remains available", _sForms);
+
+fn _attachedPostfix() {
+  let o = {x: 41};
+  testing.equal((add2(20, 22)), 42, null);
+  testing.equal((o.x + 1), 42, null);
+  testing.equal(([10, 20, 30][1]), 20, null);
+}
+t.test("attached postfix syntax selects conventional grouping", _attachedPostfix);
+
+fn _commentsAreWhitespace() {
+  testing.equal((true /* gap */ or false), true, null);
+  testing.equal((add2 /* gap */ 19 23), 42, null);
+}
+t.test("comments participate only as whitespace", _commentsAreWhitespace);
+
+fn _newlinesAreWhitespace() {
+  let grouped = (true
+    and true);
+  let scall = (add2
+    17
+    25);
+  testing.equal(grouped, true, null);
+  testing.equal(scall, 42, null);
+}
+t.test("newlines preserve the same parenthesis grammar", _newlinesAreWhitespace);
+
+fn _nestedMix() {
+  let x = (add2 (+ 1 2) (3 + 4));
+  testing.equal(x, 10, null);
+}
+t.test("nested conventional and S forms compose", _nestedMix);
+
+t.report();

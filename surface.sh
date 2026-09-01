@@ -9,6 +9,7 @@ SX_CLASS_PARENT=nil
 SX_FUNCTION_DEPTH=0
 SX_LOOP_DEPTH=0
 SX_TOKEN=
+SX_DATUM_MODE=0
 
 sx_error() {
   local near='<eof>'
@@ -162,23 +163,71 @@ sx_params_spec() {
 }
 sx_gensym() { ((++SX_GENSYM)) || true; bl_make_symbol "__sx$SX_GENSYM"; }
 
-# Parentheses are intentionally dual-purpose.  `(x + y)` is an infix group,
-# while `(f x y)` and `(+ x y)` are Lisp-style application/forms.  Whitespace
-# is significant only for resolving this one ambiguity: ordinary calls are
-# conventionally written f(...), S-calls are written (f ...).
-sx_paren_is_sexpr() {
-  local i=$((SX_POS + 1)) t=${SX_TOK_TYPE[SX_POS+1]-eof} v=${SX_TOK_VAL[SX_POS+1]-}
-  case $t:$v in
-    'op:+'|'op:-'|'op:*'|'op:/'|'op:%'|'op:<'|'op:<='|'op:>'|'op:>='|'op:='|'op:=='|'op:!='|'op:==='|'op:!=='|'op:&&'|'op:||'|'op:&'|'op:|'|'op:^'|'op:<<'|'op:>>')
-      [[ ${SX_TOK_GAP[SX_POS+2]-0} == 1 ]] ; return ;;
+# Parentheses have two peer meanings in hybrid source:
+#
+#   (a + b)     conventional grouping
+#   (f a b)     Lisp-style application
+#   (+ a b)     Lisp-style prefix application
+#
+# The distinction is grammatical, not an open-ended heuristic.  After an
+# identifier head, whitespace followed by an *expression continuation* keeps
+# the form conventional; whitespace followed by a new datum makes it an
+# S-expression.  The continuation vocabulary is centralized here so word
+# operators (`and`, `or`, `in`, `is`, `instanceof`) cannot silently fall out of
+# sync with punctuation operators.  Postfix punctuation only continues an
+# expression when it is lexically attached: `(f(x))` groups, while `(f (x))` is
+# an S-call.  In particular `(a . b)` remains Lisp dotted-list syntax whereas
+# `(a.b)` is property access.
+#
+# Comments/newlines count as whitespace exactly like spaces.  Explicit parens
+# suspend layout indentation, so this rule is independent of layout syntax.
+sx_token_is_infix_or_assignment_at() {
+  local i=$1; local v=${SX_TOK_VAL[i]-'<eof>'}
+  case $v in
+    '+'|'-'|'*'|'/'|'%'|'**'|'<'|'<='|'>'|'>='|'=='|'!='|'==='|'!=='|'&'|'|'|'^'|'<<'|'>>'|'&&'|'||'|and|or|in|is|instanceof|'..'|'..<'|'??'|'|>'|'|>>'|'='|'+='|'-='|'*='|'/='|'%='|'&='|'|='|'^='|'<<='|'>>='|'?'|'=>') return 0 ;;
+    *) return 1 ;;
   esac
-  if [[ $t == id ]]; then
-    local nv=${SX_TOK_VAL[SX_POS+2]-')'} nt=${SX_TOK_TYPE[SX_POS+2]-eof}
-    [[ ${SX_TOK_GAP[SX_POS+2]-0} == 1 ]] || return 1
-    case $nv in ')'|','|'+'|'-'|'*'|'/'|'%'|'**'|'=='|'!='|'==='|'!=='|'<'|'<='|'>'|'>='|'&&'|'||'|'&'|'|'|'^'|'<<'|'>>'|'??'|'|>'|'|>>'|'?'|'='|'+='|'-='|'*='|'/='|'%='|'&='|'|='|'^='|'<<='|'>>=') return 1;; esac
-    return 0
+}
+
+sx_token_continues_grouped_head_at() {
+  local i=$1; local v=${SX_TOK_VAL[i]-'<eof>'} gap=${SX_TOK_GAP[i]-0}
+  sx_token_is_infix_or_assignment_at "$i" && return 0
+  case $v in ')'|','|';'|'++'|'--') return 0 ;; esac
+  # Attached postfix syntax belongs to the head expression.  With a gap, `(`
+  # and `[` are instead valid starts of an S-expression argument, and spaced
+  # `.` is the Lisp dotted-tail marker.
+  if (( ! gap )); then
+    case $v in '('|'['|'.'|'?.') return 0 ;; esac
   fi
   return 1
+}
+
+sx_token_is_prefix_sexpr_operator_at() {
+  local i=$1; local t=${SX_TOK_TYPE[i]-eof} v=${SX_TOK_VAL[i]-}
+  [[ $t == op ]] || return 1
+  case $v in
+    '+'|'-'|'*'|'/'|'%'|'='|'<'|'<='|'>'|'>='|'=='|'!='|'==='|'!=='|'&&'|'||'|'&'|'|'|'^'|'<<'|'>>'|'??'|'|>'|'|>>') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+sx_paren_is_sexpr() {
+  local head=$((SX_POS + 1)) next=$((SX_POS + 2))
+  local ht=${SX_TOK_TYPE[head]-eof}
+
+  # Symbolic operators are unambiguous prefix heads when separated from their
+  # first argument.  `(-x)` remains conventional unary grouping; `(- x)` is
+  # the S-form.
+  if sx_token_is_prefix_sexpr_operator_at "$head"; then
+    [[ ${SX_TOK_GAP[next]-0} == 1 && ${SX_TOK_VAL[next]-')'} != ')' ]]
+    return
+  fi
+
+  [[ $ht == id ]] || return 1
+  # An S-call requires an actual separator after its head.
+  [[ ${SX_TOK_GAP[next]-0} == 1 ]] || return 1
+  sx_token_continues_grouped_head_at "$next" && return 1
+  [[ ${SX_TOK_VAL[next]-')'} != ')' ]]
 }
 
 sx_parse_sexpr_datum() {
@@ -192,7 +241,16 @@ sx_parse_sexpr_datum() {
       case $v in true|false) RET=$v;; null|nil) RET=nil;; *) bl_make_symbol "$v";; esac ;;
     op)
       case $v in
-        '(') sx_parse_sexpr_list ;;
+        '(')
+          if (( SX_DATUM_MODE )) || sx_paren_is_sexpr; then
+            sx_parse_sexpr_list
+          else
+            ((SX_POS++)) || true
+            sx_parse_assignment || return
+            local grouped=$RET
+            sx_expect ')' || return
+            RET=$grouped
+          fi ;;
         '[') sx_parse_array_literal ;;
         '{') sx_parse_object_literal ;;
         ':')
@@ -200,9 +258,20 @@ sx_parse_sexpr_datum() {
           if sx_type_is id || sx_type_is op; then SX_TOKEN=${SX_TOK_VAL[SX_POS]}; ((SX_POS++)) || true; else sx_error 'expected symbol after :'; return 1; fi
           bl_make_symbol "$SX_TOKEN"; local lit=$RET; sx_form quote "$lit" ;;
         '`')
-          ((SX_POS++)) || true; sx_parse_sexpr_datum || return; local q=$RET; sx_form quasiquote "$q" ;;
+          ((SX_POS++)) || true
+          ((SX_DATUM_MODE++)) || true
+          sx_parse_sexpr_datum || { ((SX_DATUM_MODE--)) || true; return; }
+          local q=$RET
+          ((SX_DATUM_MODE--)) || true
+          sx_form quasiquote "$q" ;;
         '~')
-          ((SX_POS++)) || true; sx_parse_sexpr_datum || return; local u=$RET; sx_form unquote "$u" ;;
+          ((SX_POS++)) || true
+          local restore_mode=$SX_DATUM_MODE
+          (( SX_DATUM_MODE > 0 )) && ((SX_DATUM_MODE--)) || true
+          sx_parse_sexpr_datum || { SX_DATUM_MODE=$restore_mode; return; }
+          local u=$RET
+          SX_DATUM_MODE=$restore_mode
+          sx_form unquote "$u" ;;
         '+'|'-'|'*'|'/'|'%'|'='|'<'|'<='|'>'|'>='|'=='|'!='|'==='|'!=='|'&&'|'||'|'&'|'|'|'^'|'<<'|'>>'|'??'|'|>'|'|>>')
           ((SX_POS++)) || true; bl_make_symbol "$v" ;;
         *) sx_error "unexpected token in S-expression"; return 1 ;;
@@ -838,7 +907,12 @@ sx_parse_primary() {
           if sx_type_is id || sx_type_is op; then SX_TOKEN=${SX_TOK_VAL[SX_POS]}; ((SX_POS++)) || true; else sx_error 'expected symbol after :'; return 1; fi
           bl_make_symbol "$SX_TOKEN"; local lit=$RET; sx_form quote "$lit" ;;
         '`')
-          ((SX_POS++)) || true; sx_parse_sexpr_datum || return; local q=$RET; sx_form quasiquote "$q" ;;
+          ((SX_POS++)) || true
+          ((SX_DATUM_MODE++)) || true
+          sx_parse_sexpr_datum || { ((SX_DATUM_MODE--)) || true; return; }
+          local q=$RET
+          ((SX_DATUM_MODE--)) || true
+          sx_form quasiquote "$q" ;;
         *) sx_error 'expected expression'; return 1 ;;
       esac ;;
     *) sx_error 'expected expression'; return 1 ;;
