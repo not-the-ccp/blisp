@@ -28,37 +28,131 @@ load_stdlib_interpreted() {
 is_surface_file() { [[ $1 == *.blx || $1 == *.bx || $1 == *.blh ]]; }
 
 declare -Ag BL_INCLUDE_ACTIVE=() BL_INCLUDE_SEEN=()
-declare -ag BL_SOURCE_CHUNKS=()
+declare -ag BL_SOURCE_CHUNKS=() BL_SOURCE_CHUNK_FILES=()
 BL_SOURCE_REPLY=
 
-# Hybrid `include` is lexical and ordered, but modules are deliberately kept as
-# separate source chunks instead of being concatenated into one giant string.
-# The Bash lexer is much happier on many modest modules than on one ever-larger
-# substring-scanned source buffer, and compilation can simply append the parsed
-# forms from each chunk.
+# `include` is a top-level source-loader directive, not an expression.  The
+# loader is lexical-state aware: directive-shaped text inside strings/comments
+# or nested explicit delimiters is ordinary source text and can never trigger a
+# file load.  Layout-indented directives are rejected as non-top-level.
+#
+# Syntax is deliberately narrow and deterministic:
+#
+#   include "relative/or/absolute/path.blx";
+#
+# The directive occupies its physical line (apart from whitespace and an
+# optional trailing // comment).  Paths resolve relative to the containing
+# source file.  Files are included at most once; active recursion is a cycle.
+BL_LOAD_DEPTH=0
+BL_LOAD_QUOTE=
+BL_LOAD_BLOCK_COMMENT=0
+BL_INCLUDE_PATH=
+
+bl_loader_scan_line() {
+  local line=$1 depth=$2 quote=$3 block=$4 i=0 n=${#1} c d esc=0
+  while (( i < n )); do
+    c=${line:i:1}; d=${line:i+1:1}
+    if (( block )); then
+      if [[ $c == '*' && $d == / ]]; then block=0; ((i+=2)) || true; continue; fi
+      ((i++)) || true; continue
+    fi
+    if [[ -n $quote ]]; then
+      if (( esc )); then esc=0
+      elif [[ $c == \\ ]]; then esc=1
+      elif [[ $c == "$quote" ]]; then quote=; fi
+      ((i++)) || true; continue
+    fi
+    if [[ $c == / && $d == / ]]; then break; fi
+    if [[ $c == / && $d == '*' ]]; then block=1; ((i+=2)) || true; continue; fi
+    if [[ $c == '"' || $c == "'" ]]; then quote=$c; ((i++)) || true; continue; fi
+    case $c in
+      '('|'['|'{') ((depth++)) || true ;;
+      ')'|']'|'}') (( depth > 0 )) && ((depth--)) || true ;;
+    esac
+    ((i++)) || true
+  done
+  BL_LOAD_DEPTH=$depth; BL_LOAD_QUOTE=$quote; BL_LOAD_BLOCK_COMMENT=$block
+}
+
+# Parse only the source-directive spelling.  Return 0 for a complete directive,
+# 1 when the line is not directive-shaped, and 2 for malformed include syntax.
+bl_loader_include_line() {
+  local line=$1 rest path= out= c i=0 esc=0
+  BL_INCLUDE_PATH=
+  [[ $line =~ ^include[[:space:]]+ ]] || return 1
+  rest=${line#include}; rest=${rest#"${rest%%[![:space:]]*}"}
+  [[ ${rest:0:1} == '"' ]] || { echo 'blisp: include path must be a double-quoted string' >&2; return 2; }
+  ((i++)) || true
+  while (( i < ${#rest} )); do
+    c=${rest:i:1}; ((i++)) || true
+    if (( esc )); then
+      case $c in '"'|\\) out+=$c;; *) echo "blisp: unsupported include path escape \\$c" >&2; return 2;; esac
+      esc=0; continue
+    fi
+    if [[ $c == \\ ]]; then esc=1; continue; fi
+    [[ $c == '"' ]] && break
+    out+=$c
+  done
+  [[ $c == '"' ]] && (( ! esc )) || { echo 'blisp: unterminated include path' >&2; return 2; }
+  rest=${rest:i}; rest=${rest#"${rest%%[![:space:]]*}"}
+  [[ ${rest:0:1} == ';' ]] && { rest=${rest:1}; rest=${rest#"${rest%%[![:space:]]*}"}; }
+  [[ -z $rest || $rest == //* ]] || { echo 'blisp: include directive must occupy its source line' >&2; return 2; }
+  [[ -n $out ]] || { echo 'blisp: include path may not be empty' >&2; return 2; }
+  BL_INCLUDE_PATH=$out
+  return 0
+}
+
+bl_source_chunk_add() {
+  local file=$1 text=$2
+  [[ -z $text ]] && return 0
+  BL_SOURCE_CHUNKS+=("$text")
+  BL_SOURCE_CHUNK_FILES+=("$file")
+}
+
+# Hybrid files stay as separate ordered chunks for parser performance, but
+# source loading itself has language-level semantics independent of chunking.
 bl_collect_hybrid_file() {
-  local file=$1 abs dir line child buf=
-  abs=$(cd -- "$(dirname -- "$file")" && pwd)/$(basename -- "$file") || return
+  local file=$1 abs dir line child buf= depth=0 quote= block=0 indent trimmed st
+  abs=$(cd -- "$(dirname -- "$file")" 2>/dev/null && pwd -P)/$(basename -- "$file") || return
   [[ -f $abs ]] || { echo "blisp: include not found: $file" >&2; return 1; }
   [[ ${BL_INCLUDE_ACTIVE[$abs]-0} == 0 ]] || { echo "blisp: include cycle involving $abs" >&2; return 1; }
   [[ ${BL_INCLUDE_SEEN[$abs]-0} == 0 ]] || return 0
   BL_INCLUDE_ACTIVE[$abs]=1; BL_INCLUDE_SEEN[$abs]=1; dir=${abs%/*}
+
   while IFS= read -r line || [[ -n $line ]]; do
-    if [[ $line =~ ^[[:space:]]*include[[:space:]]+\"([^\"]+)\"[[:space:]]*\;?[[:space:]]*$ ]]; then
-      [[ -z $buf ]] || { BL_SOURCE_CHUNKS+=("$buf"); buf=; }
-      child=${BASH_REMATCH[1]}; [[ $child == /* ]] || child="$dir/$child"
-      bl_collect_hybrid_file "$child" || { unset 'BL_INCLUDE_ACTIVE[$abs]'; return 1; }
-    else
-      buf+="$line"$'\n'
+    trimmed=${line#"${line%%[![:space:]]*}"}
+    indent=${#line}; indent=$((indent - ${#trimmed}))
+
+    # Only test directive syntax when the line starts in normal lexical state.
+    # If it looks like include syntax in a nested/layout context, reject it
+    # explicitly rather than letting chunk boundaries define its meaning.
+    if [[ -z $quote ]] && (( ! block )) && [[ $trimmed == include[[:space:]]* ]]; then
+      if bl_loader_include_line "$trimmed"; then
+        if (( depth != 0 || indent != 0 )); then
+          echo "blisp: include is top-level only: $abs" >&2
+          unset 'BL_INCLUDE_ACTIVE[$abs]'; return 1
+        fi
+        bl_source_chunk_add "$abs" "$buf"; buf=
+        child=$BL_INCLUDE_PATH; [[ $child == /* ]] || child="$dir/$child"
+        bl_collect_hybrid_file "$child" || { unset 'BL_INCLUDE_ACTIVE[$abs]'; return 1; }
+        continue
+      else
+        st=$?
+        if (( st == 2 )); then unset 'BL_INCLUDE_ACTIVE[$abs]'; return 1; fi
+      fi
     fi
+
+    buf+="$line"$'\n'
+    bl_loader_scan_line "$line" "$depth" "$quote" "$block"
+    depth=$BL_LOAD_DEPTH; quote=$BL_LOAD_QUOTE; block=$BL_LOAD_BLOCK_COMMENT
   done < "$abs"
-  [[ -z $buf ]] || BL_SOURCE_CHUNKS+=("$buf")
+  bl_source_chunk_add "$abs" "$buf"
   unset 'BL_INCLUDE_ACTIVE[$abs]'
 }
 
 # Compatibility helper for code that still wants the expanded textual source.
 bl_expand_hybrid_file() {
-  BL_SOURCE_CHUNKS=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=()
+  BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=()
   bl_collect_hybrid_file "$1" || return
   BL_SOURCE_REPLY=
   local chunk; for chunk in "${BL_SOURCE_CHUNKS[@]}"; do BL_SOURCE_REPLY+="$chunk"$'\n'; done
@@ -92,7 +186,7 @@ cmd_run() {
   load_stdlib_interpreted || return
   local src
   if is_surface_file "$file"; then
-    BL_SOURCE_CHUNKS=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=(); bl_collect_hybrid_file "$file" || return
+    BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=(); bl_collect_hybrid_file "$file" || return
     bl_interpret_surface_chunks "$BL_GLOBAL_ENV"
   else
     src=$(cat -- "$file") || return; bl_interpret_source "$src" "$BL_GLOBAL_ENV"
@@ -130,7 +224,7 @@ cmd_compile() {
   local std src
   std=$(cat "$SELF_DIR/stdlib.bl") || return
   if is_surface_file "$file"; then
-    BL_SOURCE_CHUNKS=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=(); bl_collect_hybrid_file "$file" || return
+    BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=(); bl_collect_hybrid_file "$file" || return
   else src=$(cat -- "$file") || return; fi
   bl_runtime_init
   if is_surface_file "$file"; then

@@ -1,0 +1,11 @@
+// include "definitely-missing-comment.blx";
+/*
+include "definitely-missing-block-comment.blx";
+*/
+let harmless = "first line
+include \"definitely-missing-string.blx\";
+last line";
+include "lib/a.blx"; // source dependency
+include "./lib/a.blx"; // duplicate is loaded once
+println(fromA + fromB);
+println(harmless.contains("definitely-missing-string"));

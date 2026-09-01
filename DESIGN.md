@@ -281,6 +281,20 @@ NUL; this implementation limitation is exposed instead of silently corrupting da
 8. Syntax additions must remove recurring structural friction, not just save a character in
    one special case.
 
+## Source inclusion is deliberately narrower than modules
+
+`include "path.blx";` is a top-level source-loader directive. It inserts the dependency's
+top-level forms in source order, resolves relative paths against the containing source file,
+loads each canonical source path at most once per source graph, and rejects cycles. It is
+recognized by a lexical-state-aware loader, so directive-looking text inside strings,
+comments, functions, explicit blocks, or layout blocks cannot accidentally load files.
+
+`include` is not an expression, cannot occur inside a function/block, and does not create a
+namespace value. Chunked parsing remains a Bash-reference-runtime optimization rather than
+part of inclusion semantics. A future module/package system should build explicit namespaces,
+exports/imports and package identity on top of the source graph rather than making `include`
+perform two incompatible jobs.
+
 ## Implementation note
 
 Hybrid syntax and S-expressions parse into the same internal AST because an interpreter and

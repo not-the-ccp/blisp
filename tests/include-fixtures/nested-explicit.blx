@@ -1,0 +1,3 @@
+fn bad() {
+  include "lib/a.blx";
+}
