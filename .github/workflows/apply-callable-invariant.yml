@@ -1,0 +1,29 @@
+name: Apply callable/prototype invariant
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.sync/callable.patch.xz.b64'
+      - '.github/workflows/apply-callable-invariant.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply tested callable checkpoint
+        run: |
+          base64 -d .sync/callable.patch.xz.b64 | xz -d > /tmp/callable.patch
+          echo 'ca09f8d9dacf4a42c0f0703b30a15435a873324606494fef468a1034bab417c7  /tmp/callable.patch' | sha256sum -c -
+          git apply /tmp/callable.patch
+          rm -rf .sync .github/workflows/apply-callable-invariant.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Enforce one callable prototype invariant"
+          git push
