@@ -1,0 +1,46 @@
+include "../lib/testing.blx";
+
+let t = testing.suite("hygiene");
+
+fn _generatedBindingsCannotCapture() {
+  // #1: nullish lowering introduces one temporary.
+  let __sx1 = 123;
+  let absent = null;
+  testing.equal(absent ?? __sx1, 123, "nullish temp captured source name");
+
+  // #2: call-hole lowering uses the hole as a lambda parameter. The ordinary
+  // argument must still resolve the source binding, not the generated param.
+  let __sx2 = 9;
+  fn pair(a, b) { return [a, b]; }
+  let hole = pair(?, __sx2);
+  testing.equal(hole(3), [3, 9], "call-hole temp captured source name");
+
+  // #3: match evaluates its subject once in a generated binding. A pattern
+  // carrying the same old debug spelling must still refer to user state.
+  let __sx3 = 3;
+  let matched = match 2 { __sx3 => "wrong"; else => "right"; };
+  testing.equal(matched, "right", "match temp captured pattern expression");
+
+  // #4: destructuring's generated RHS holder must not overwrite a source
+  // binding merely because both print with the same debug spelling.
+  let __sx4 = 99;
+  let [first] = [1];
+  testing.equal(first, 1, null);
+  testing.equal(__sx4, 99, "destructuring temp overwrote source binding");
+
+  // #5/#6: compound property assignment evaluates receiver/key once. Its
+  // internal receiver binding must not capture the RHS's source __sx5.
+  let __sx5 = 10;
+  let obj = {x: 1};
+  obj.x += __sx5;
+  testing.equal(obj.x, 11, "compound-assignment temp captured RHS");
+
+  // #7: default-argument lowering uses an internal rest parameter. The
+  // default expression must resolve this outer source binding instead.
+  let __sx7 = 40;
+  fn defaulted(x = __sx7) { return x + 2; }
+  testing.equal(defaulted(), 42, "default-argument temp captured source binding");
+}
+t.test("generated binding identities are hygienic", _generatedBindingsCannotCapture);
+
+t.report();

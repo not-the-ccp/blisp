@@ -10,6 +10,76 @@ SX_FUNCTION_DEPTH=0
 SX_LOOP_DEPTH=0
 SX_TOKEN=
 SX_DATUM_MODE=0
+SX_TRAILING_CLOSURE_ENABLED=1
+SX_ARROW_SUPPRESS_POS=-1
+
+# Operator spellings are aliases for one canonical semantic operator.  A word
+# spelling and a symbolic spelling must never differ in precedence,
+# associativity, short-circuiting, overloading, or lowering.
+declare -Ag SX_OPERATOR_CANON=(
+  ['+']='add'              [plus]='add'              [add]='add'
+  ['-']='sub'              [minus]='sub'             [sub]='sub'
+  ['*']='mul'              [times]='mul'             [mul]='mul'
+  ['/']='div'              [divided_by]='div'        [div]='div'
+  ['%']='mod'              [modulo]='mod'            [mod]='mod'
+  ['**']='pow'             [raised_to]='pow'         [pow]='pow'
+
+  ['<']='lt'               [less_than]='lt'          [lt]='lt'
+  ['<=']='le'              [at_most]='le'            [le]='le'
+  ['>']='gt'               [greater_than]='gt'       [gt]='gt'
+  ['>=']='ge'              [at_least]='ge'           [ge]='ge'
+  ['==']='eq'              [equals]='eq'            [eq]='eq'
+  ['!=']='ne'              [not_equals]='ne'         [ne]='ne'
+  ['===']='ident'          [is]='ident'              [ident]='ident'
+  ['!==']='nident'         [is_not]='nident'         [nident]='nident'
+
+  ['&&']='and'             [and]='and'
+  ['||']='or'              [or]='or'
+  ['!']='not'              [not]='not'
+
+  ['&']='band'             [bit_and]='band'          [band]='band'
+  ['|']='bor'              [bit_or]='bor'            [bor]='bor'
+  ['^']='bxor'             [bit_xor]='bxor'          [bxor]='bxor'
+  ['~']='bnot'             [bit_not]='bnot'          [bnot]='bnot'
+  ['<<']='shl'             [shift_left]='shl'        [shl]='shl'
+  ['>>']='shr'             [shift_right]='shr'       [shr]='shr'
+
+  ['??']='coalesce'        [coalesce]='coalesce'
+  ['..']='range_inc'       [through]='range_inc'     [range_inc]='range_inc'
+  ['..<']='range_exc'      [before]='range_exc'      [range_exc]='range_exc'
+  ['|>']='pipe_first'      [pipe]='pipe_first'       [pipe_first]='pipe_first'
+  ['|>>']='pipe_last'      [pipe_last]='pipe_last'
+
+  # ASCII symbolic counterparts for the previously word-only relations.
+  # `@` reads as membership/"at/in"; `<:` is conventional subtype/type-membership notation.
+  ['@']='in'               [in]='in'
+  ['!@']='not_in'          [not_in]='not_in'
+  ['<:']='instanceof'      [instanceof]='instanceof'
+  ['!<:']='not_instanceof' [not_instanceof]='not_instanceof'
+)
+SX_OPERATOR=
+
+sx_operator_at() {
+  local i=$1 v=${SX_TOK_VAL[$1]-} t=${SX_TOK_TYPE[$1]-eof}
+  [[ $t == op || $t == id ]] || { SX_OPERATOR=; return 1; }
+  [[ -n $v ]] || { SX_OPERATOR=; return 1; }
+  SX_OPERATOR=${SX_OPERATOR_CANON[$v]-}
+  [[ -n $SX_OPERATOR ]]
+}
+
+sx_accept_operator() {
+  local want=$1
+  sx_operator_at "$SX_POS" || return 1
+  [[ $SX_OPERATOR == "$want" ]] || return 1
+  ((SX_POS++)) || true
+}
+
+sx_operator_canon_is_infix() {
+  case $1 in
+    add|sub|mul|div|mod|pow|lt|le|gt|ge|eq|ne|ident|nident|and|or|band|bor|bxor|shl|shr|coalesce|range_inc|range_exc|pipe_first|pipe_last|in|not_in|instanceof|not_instanceof) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 sx_error() {
   local near='<eof>'
@@ -115,13 +185,13 @@ sx_lex() {
       sx_tok str "$buf" "$gap"; gap=0; continue
     fi
     op=
-    for d in '<<=' '>>=' '...' '..<' '===' '!==' '=>' '**' '|>>' '|>' '?.' '??' '<<' '>>' '==' '!=' '<=' '>=' '&&' '||' '++' '--' '+=' '-=' '*=' '/=' '%=' '&=' '|=' '^='; do
+    for d in '!<:' '<<=' '>>=' '...' '..<' '===' '!==' '=>' '**' '|>>' '|>' '?.' '??' '<:' '!@' '<<' '>>' '==' '!=' '<=' '>=' '&&' '||' '++' '--' '+=' '-=' '*=' '/=' '%=' '&=' '|=' '^='; do
       if [[ ${src:i:${#d}} == "$d" ]]; then op=$d; break; fi
     done
     if [[ -n $op ]]; then sx_tok op "$op" "$gap"; gap=0; ((i+=${#op})) || true; continue; fi
     if [[ ${src:i:2} == '..' ]]; then sx_tok op '..' "$gap"; gap=0; ((i+=2)) || true; continue; fi
     case $c in
-      '('|')'|'{'|'}'|'['|']'|';'|','|'.'|'?'|':'|'+'|'-'|'*'|'/'|'%'|'!'|'<'|'>'|'='|'|'|'&'|'^'|'`'|'~')
+      '('|')'|'{'|'}'|'['|']'|';'|','|'.'|'?'|':'|'+'|'-'|'*'|'/'|'%'|'!'|'<'|'>'|'='|'|'|'&'|'^'|'@'|'`'|'~')
         sx_tok op "$c" "$gap"; gap=0; ((i++)) || true ;;
       *) printf 'BLisp hybrid lexer: unexpected character %q\n' "$c" >&2; return 1 ;;
     esac
@@ -161,7 +231,7 @@ sx_params_spec() {
   for ((i=${#names[@]}-1;i>=0;--i)); do bl_make_symbol "${names[i]}"; bl_cons "$RET" "$out"; out=$RET; done
   RET=$out
 }
-sx_gensym() { ((++SX_GENSYM)) || true; bl_make_symbol "__sx$SX_GENSYM"; }
+sx_gensym() { ((++SX_GENSYM)) || true; bl_make_gensym "__sx$SX_GENSYM"; }
 
 # Parentheses have two peer meanings in hybrid source:
 #
@@ -182,20 +252,16 @@ sx_gensym() { ((++SX_GENSYM)) || true; bl_make_symbol "__sx$SX_GENSYM"; }
 # Comments/newlines count as whitespace exactly like spaces.  Explicit parens
 # suspend layout indentation, so this rule is independent of layout syntax.
 sx_token_is_infix_or_assignment_at() {
-  local i=$1; local v=${SX_TOK_VAL[i]-'<eof>'}
-  case $v in
-    '+'|'-'|'*'|'/'|'%'|'**'|'<'|'<='|'>'|'>='|'=='|'!='|'==='|'!=='|'&'|'|'|'^'|'<<'|'>>'|'&&'|'||'|and|or|in|is|instanceof|'..'|'..<'|'??'|'|>'|'|>>'|'='|'+='|'-='|'*='|'/='|'%='|'&='|'|='|'^='|'<<='|'>>='|'?'|'=>') return 0 ;;
-    *) return 1 ;;
-  esac
+  local i=$1 v=${SX_TOK_VAL[$1]-'<eof>'}
+  if sx_operator_at "$i" && sx_operator_canon_is_infix "$SX_OPERATOR"; then return 0; fi
+  case $v in '='|'+='|'-='|'*='|'/='|'%='|'&='|'|='|'^='|'<<='|'>>='|'?'|'=>') return 0 ;; esac
+  return 1
 }
 
 sx_token_continues_grouped_head_at() {
   local i=$1; local v=${SX_TOK_VAL[i]-'<eof>'} gap=${SX_TOK_GAP[i]-0}
   sx_token_is_infix_or_assignment_at "$i" && return 0
   case $v in ')'|','|';'|'++'|'--') return 0 ;; esac
-  # Attached postfix syntax belongs to the head expression.  With a gap, `(`
-  # and `[` are instead valid starts of an S-expression argument, and spaced
-  # `.` is the Lisp dotted-tail marker.
   if (( ! gap )); then
     case $v in '('|'['|'.'|'?.') return 0 ;; esac
   fi
@@ -203,10 +269,10 @@ sx_token_continues_grouped_head_at() {
 }
 
 sx_token_is_prefix_sexpr_operator_at() {
-  local i=$1; local t=${SX_TOK_TYPE[i]-eof} v=${SX_TOK_VAL[i]-}
-  [[ $t == op ]] || return 1
-  case $v in
-    '+'|'-'|'*'|'/'|'%'|'='|'<'|'<='|'>'|'>='|'=='|'!='|'==='|'!=='|'&&'|'||'|'&'|'|'|'^'|'<<'|'>>'|'??'|'|>'|'|>>') return 0 ;;
+  local i=$1
+  sx_operator_at "$i" || return 1
+  case $SX_OPERATOR in
+    add|sub|mul|div|mod|pow|lt|le|gt|ge|eq|ne|ident|nident|and|or|not|band|bor|bxor|bnot|shl|shr|coalesce|pipe_first|pipe_last|in|not_in|instanceof|not_instanceof) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -215,19 +281,38 @@ sx_paren_is_sexpr() {
   local head=$((SX_POS + 1)) next=$((SX_POS + 2))
   local ht=${SX_TOK_TYPE[head]-eof}
 
-  # Symbolic operators are unambiguous prefix heads when separated from their
-  # first argument.  `(-x)` remains conventional unary grouping; `(- x)` is
-  # the S-form.
+  # Operator heads are prefix S-forms only when separated from their first
+  # argument.  `(-x)` groups unary minus; `(- x)` / `(minus x)` are S-forms.
   if sx_token_is_prefix_sexpr_operator_at "$head"; then
     [[ ${SX_TOK_GAP[next]-0} == 1 && ${SX_TOK_VAL[next]-')'} != ')' ]]
     return
   fi
 
   [[ $ht == id ]] || return 1
-  # An S-call requires an actual separator after its head.
   [[ ${SX_TOK_GAP[next]-0} == 1 ]] || return 1
   sx_token_continues_grouped_head_at "$next" && return 1
   [[ ${SX_TOK_VAL[next]-')'} != ')' ]]
+}
+
+sx_operator_ast_symbol() {
+  local canon=$1
+  case $canon in
+    add) sx_sym '+' ;; sub) sx_sym '-' ;; mul) sx_sym '*' ;; div) sx_sym '/' ;; mod) sx_sym '%' ;;
+    pow) sx_sym @pow ;;
+    lt) sx_sym '<' ;; le) sx_sym '<=' ;; gt) sx_sym '>' ;; ge) sx_sym '>=' ;;
+    eq) sx_sym equal? ;; ne) sx_sym not-equal? ;;
+    ident) sx_sym eq? ;; nident) sx_sym not-identical? ;;
+    and) sx_sym and ;; or) sx_sym or ;; not) sx_sym not ;;
+    band) sx_sym '&' ;; bor) sx_sym '|' ;; bxor) sx_sym '^' ;; bnot) sx_sym bit-not ;;
+    shl) sx_sym '<<' ;; shr) sx_sym '>>' ;;
+    in) sx_sym in ;; not_in) sx_sym not-in ;;
+    instanceof) sx_sym instanceof ;; not_instanceof) sx_sym not-instanceof ;;
+    coalesce|range_inc|range_exc|pipe_first|pipe_last)
+      # These depend on surface-language evaluation/lowering rules and are not
+      # exposed as raw prefix runtime operators yet.
+      return 1 ;;
+    *) return 1 ;;
+  esac
 }
 
 sx_parse_sexpr_datum() {
@@ -238,7 +323,15 @@ sx_parse_sexpr_datum() {
     str) ((SX_POS++)) || true; bl_make_string "$v" ;;
     id)
       ((SX_POS++)) || true
-      case $v in true|false) RET=$v;; null|nil) RET=nil;; *) bl_make_symbol "$v";; esac ;;
+      case $v in
+        true|false) RET=$v ;;
+        null|nil) RET=nil ;;
+        *)
+          local opcanon=${SX_OPERATOR_CANON[$v]-}
+          if [[ -n $opcanon ]] && sx_operator_ast_symbol "$opcanon"; then :
+          else bl_make_symbol "$v"
+          fi ;;
+      esac ;;
     op)
       case $v in
         '(')
@@ -272,9 +365,11 @@ sx_parse_sexpr_datum() {
           local u=$RET
           SX_DATUM_MODE=$restore_mode
           sx_form unquote "$u" ;;
-        '+'|'-'|'*'|'/'|'%'|'='|'<'|'<='|'>'|'>='|'=='|'!='|'==='|'!=='|'&&'|'||'|'&'|'|'|'^'|'<<'|'>>'|'??'|'|>'|'|>>')
-          ((SX_POS++)) || true; bl_make_symbol "$v" ;;
-        *) sx_error "unexpected token in S-expression"; return 1 ;;
+        *)
+          local opcanon=${SX_OPERATOR_CANON[$v]-}
+          if [[ -n $opcanon ]] && sx_operator_ast_symbol "$opcanon"; then ((SX_POS++)) || true
+          else sx_error "unexpected token in S-expression"; return 1
+          fi ;;
       esac ;;
     *) sx_error 'expected S-expression datum'; return 1 ;;
   esac
@@ -318,15 +413,19 @@ SX_GET_OBJ= SX_GET_KEY=
 sx_binary() {
   local op=$1 a=$2 b=$3 name
   case $op in
-    '+'|'-'|'*'|'/'|'%'|'<'|'<='|'>'|'>='|'&'|'|'|'^'|'<<'|'>>') name=$op ;;
-    '==') name='equal?' ;;
-    '==='|is) name='eq?' ;;
-    '&&'|and) name='and' ;;
-    '||'|or) name='or' ;;
+    add) name='+' ;; sub) name='-' ;; mul) name='*' ;; div) name='/' ;; mod) name='%' ;;
+    lt) name='<' ;; le) name='<=' ;; gt) name='>' ;; ge) name='>=' ;;
+    band) name='&' ;; bor) name='|' ;; bxor) name='^' ;; shl) name='<<' ;; shr) name='>>' ;;
+    eq) name='equal?' ;;
+    ident) name='eq?' ;;
+    and) name='and' ;;
+    or) name='or' ;;
     instanceof) name='instanceof' ;;
     in) sx_form has-prop? "$b" "$a"; return ;;
-    '!=' ) sx_form equal? "$a" "$b"; local x=$RET; sx_form not "$x"; return ;;
-    '!=='|'is-not') sx_form eq? "$a" "$b"; local x=$RET; sx_form not "$x"; return ;;
+    ne) sx_form equal? "$a" "$b"; local x=$RET; sx_form not "$x"; return ;;
+    nident) sx_form eq? "$a" "$b"; local x=$RET; sx_form not "$x"; return ;;
+    not_in) sx_form has-prop? "$b" "$a"; local x=$RET; sx_form not "$x"; return ;;
+    not_instanceof) sx_form instanceof "$a" "$b"; local x=$RET; sx_form not "$x"; return ;;
     *) sx_error "internal: unknown binary operator $op"; return 1 ;;
   esac
   sx_form "$name" "$a" "$b"
@@ -338,7 +437,9 @@ sx_make_assignment() {
   if [[ ${BL_TYPE[$lhs]-} == symbol ]]; then
     local name=${BL_A[$lhs]} val=$rhs
     if [[ $op != '=' ]]; then
-      sx_binary "${op%=}" "$lhs" "$rhs" || return; val=$RET
+      local bare=${op%=}; local canon=${SX_OPERATOR_CANON[$bare]-}
+      [[ -n $canon ]] || { sx_error "internal: unknown compound assignment $op"; return 1; }
+      sx_binary "$canon" "$lhs" "$rhs" || return; val=$RET
     fi
     sx_form set! "$lhs" "$val"; return
   fi
@@ -348,7 +449,9 @@ sx_make_assignment() {
     # Evaluate computed receiver/key once for compound assignment.
     sx_gensym; local to=$RET; sx_gensym; local tk=$RET
     sx_form @get "$to" "$tk"; local old=$RET
-    sx_binary "${op%=}" "$old" "$rhs" || return; local nv=$RET
+    local bare=${op%=}; local canon=${SX_OPERATOR_CANON[$bare]-}
+    [[ -n $canon ]] || { sx_error "internal: unknown compound assignment $op"; return 1; }
+    sx_binary "$canon" "$old" "$rhs" || return; local nv=$RET
     sx_form set-prop! "$to" "$tk" "$nv"; local set=$RET
     bl_list_from_array "$to" "$obj"; local bo=$RET
     bl_list_from_array "$tk" "$key"; local bk=$RET
@@ -359,6 +462,7 @@ sx_make_assignment() {
 }
 
 sx_arrow_lookahead() {
+  (( SX_POS != SX_ARROW_SUPPRESS_POS )) || return 1
   local save=$SX_POS i=$SX_POS
   SX_ARROW_NAMES=(); SX_ARROW_REST=
   if [[ ${SX_TOK_TYPE[i]} == id && ${SX_TOK_VAL[i+1]-} == '=>' ]]; then
@@ -533,15 +637,15 @@ sx_parse_pipe_receiver_stage() {
 }
 
 sx_parse_pipe() {
-  sx_parse_nullish || return; local a=$RET op rhs
-  while sx_is '|>' || sx_is '|>>'; do
-    op=${SX_TOK_VAL[SX_POS]}; ((SX_POS++)) || true
+  sx_parse_nullish || return; local a=$RET rhs
+  while sx_operator_at "$SX_POS" && [[ $SX_OPERATOR == pipe_first || $SX_OPERATOR == pipe_last ]]; do
+    local op=$SX_OPERATOR; ((SX_POS++)) || true
     if sx_is '.'; then
       sx_parse_pipe_receiver_stage "$a" || return; a=$RET
       continue
     fi
     sx_parse_nullish || return; rhs=$RET
-    if [[ $op == '|>>' ]]; then sx_pipe_apply_last "$a" "$rhs" || return
+    if [[ $op == pipe_last ]]; then sx_pipe_apply_last "$a" "$rhs" || return
     else sx_pipe_apply_first "$a" "$rhs" || return
     fi
     a=$RET
@@ -551,7 +655,7 @@ sx_parse_pipe() {
 
 sx_parse_nullish() {
   sx_parse_or || return; local a=$RET
-  while sx_accept '??'; do
+  while sx_accept_operator coalesce; do
     sx_parse_or || return; local b=$RET
     sx_gensym; local t=$RET
     sx_form null? "$t"; local cond=$RET
@@ -562,65 +666,100 @@ sx_parse_nullish() {
   RET=$a
 }
 
-sx_parse_or() { sx_parse_and || return; local a=$RET op; while sx_is '||' || sx_is or; do op=${SX_TOK_VAL[SX_POS]}; ((SX_POS++)) || true; sx_parse_and || return; sx_binary "$op" "$a" "$RET"; a=$RET; done; RET=$a; }
-sx_parse_and() { sx_parse_bit_or || return; local a=$RET op; while sx_is '&&' || sx_is and; do op=${SX_TOK_VAL[SX_POS]}; ((SX_POS++)) || true; sx_parse_bit_or || return; sx_binary "$op" "$a" "$RET"; a=$RET; done; RET=$a; }
-sx_parse_bit_or() { sx_parse_bit_xor || return; local a=$RET; while sx_accept '|'; do sx_parse_bit_xor || return; sx_binary '|' "$a" "$RET"; a=$RET; done; RET=$a; }
-sx_parse_bit_xor() { sx_parse_bit_and || return; local a=$RET; while sx_accept '^'; do sx_parse_bit_and || return; sx_binary '^' "$a" "$RET"; a=$RET; done; RET=$a; }
-sx_parse_bit_and() { sx_parse_equality || return; local a=$RET; while sx_accept '&'; do sx_parse_equality || return; sx_binary '&' "$a" "$RET"; a=$RET; done; RET=$a; }
+sx_parse_or() {
+  sx_parse_and || return; local a=$RET
+  while sx_accept_operator or; do sx_parse_and || return; sx_binary or "$a" "$RET"; a=$RET; done
+  RET=$a
+}
+sx_parse_and() {
+  sx_parse_bit_or || return; local a=$RET
+  while sx_accept_operator and; do sx_parse_bit_or || return; sx_binary and "$a" "$RET"; a=$RET; done
+  RET=$a
+}
+sx_parse_bit_or() {
+  sx_parse_bit_xor || return; local a=$RET
+  while sx_accept_operator bor; do sx_parse_bit_xor || return; sx_binary bor "$a" "$RET"; a=$RET; done
+  RET=$a
+}
+sx_parse_bit_xor() {
+  sx_parse_bit_and || return; local a=$RET
+  while sx_accept_operator bxor; do sx_parse_bit_and || return; sx_binary bxor "$a" "$RET"; a=$RET; done
+  RET=$a
+}
+sx_parse_bit_and() {
+  sx_parse_equality || return; local a=$RET
+  while sx_accept_operator band; do sx_parse_equality || return; sx_binary band "$a" "$RET"; a=$RET; done
+  RET=$a
+}
 
 sx_parse_equality() {
-  sx_parse_relational || return; local a=$RET op
-  while :; do
-    op=${SX_TOK_VAL[SX_POS]}
-    case $op in '=='|'!='|'==='|'!=='|is) ((SX_POS++)) || true; sx_parse_relational || return; sx_binary "$op" "$a" "$RET" || return; a=$RET;; *) break;; esac
-  done; RET=$a
+  sx_parse_relational || return; local a=$RET
+  while sx_operator_at "$SX_POS"; do
+    local op=$SX_OPERATOR
+    case $op in eq|ne|ident|nident) ((SX_POS++)) || true; sx_parse_relational || return; sx_binary "$op" "$a" "$RET" || return; a=$RET ;; *) break ;; esac
+  done
+  RET=$a
 }
 
 sx_parse_relational() {
-  sx_parse_range || return; local a=$RET op
-  while :; do
-    op=${SX_TOK_VAL[SX_POS]}
-    case $op in '<'|'<='|'>'|'>='|instanceof|in) ((SX_POS++)) || true; sx_parse_range || return; sx_binary "$op" "$a" "$RET" || return; a=$RET;; *) break;; esac
-  done; RET=$a
+  sx_parse_range || return; local a=$RET
+  while sx_operator_at "$SX_POS"; do
+    local op=$SX_OPERATOR
+    case $op in lt|le|gt|ge|instanceof|not_instanceof|in|not_in) ((SX_POS++)) || true; sx_parse_range || return; sx_binary "$op" "$a" "$RET" || return; a=$RET ;; *) break ;; esac
+  done
+  RET=$a
 }
 
 sx_parse_range() {
-  sx_parse_shift || return; local a=$RET op
-  if sx_is '..' || sx_is '..<'; then
-    op=${SX_TOK_VAL[SX_POS]}; ((SX_POS++)) || true
+  sx_parse_shift || return; local a=$RET
+  if sx_operator_at "$SX_POS" && [[ $SX_OPERATOR == range_inc || $SX_OPERATOR == range_exc ]]; then
+    local op=$SX_OPERATOR; ((SX_POS++)) || true
     sx_parse_shift || return; local b=$RET
-    [[ $op == '..' ]] && sx_form range-inclusive "$a" "$b" || sx_form range-exclusive "$a" "$b"
+    [[ $op == range_inc ]] && sx_form range-inclusive "$a" "$b" || sx_form range-exclusive "$a" "$b"
   else RET=$a; fi
 }
 
 sx_parse_shift() {
-  sx_parse_additive || return; local a=$RET op
-  while sx_is '<<' || sx_is '>>'; do op=${SX_TOK_VAL[SX_POS]}; ((SX_POS++)) || true; sx_parse_additive || return; sx_binary "$op" "$a" "$RET"; a=$RET; done
+  sx_parse_additive || return; local a=$RET
+  while sx_operator_at "$SX_POS" && [[ $SX_OPERATOR == shl || $SX_OPERATOR == shr ]]; do
+    local op=$SX_OPERATOR; ((SX_POS++)) || true; sx_parse_additive || return; sx_binary "$op" "$a" "$RET"; a=$RET
+  done
   RET=$a
 }
 
 sx_parse_additive() {
-  sx_parse_multiplicative || return; local a=$RET op
-  while :; do op=${SX_TOK_VAL[SX_POS]}; case $op in '+'|'-') ((SX_POS++)) || true; sx_parse_multiplicative || return; sx_binary "$op" "$a" "$RET"; a=$RET;; *) break;; esac; done; RET=$a
+  sx_parse_multiplicative || return; local a=$RET
+  while sx_operator_at "$SX_POS" && [[ $SX_OPERATOR == add || $SX_OPERATOR == sub ]]; do
+    local op=$SX_OPERATOR; ((SX_POS++)) || true; sx_parse_multiplicative || return; sx_binary "$op" "$a" "$RET"; a=$RET
+  done
+  RET=$a
 }
+
 sx_parse_multiplicative() {
-  sx_parse_exponent || return; local a=$RET op
-  while :; do op=${SX_TOK_VAL[SX_POS]}; case $op in '*'|'/'|'%') ((SX_POS++)) || true; sx_parse_exponent || return; sx_binary "$op" "$a" "$RET"; a=$RET;; *) break;; esac; done; RET=$a
+  sx_parse_exponent || return; local a=$RET
+  while sx_operator_at "$SX_POS" && [[ $SX_OPERATOR == mul || $SX_OPERATOR == div || $SX_OPERATOR == mod ]]; do
+    local op=$SX_OPERATOR; ((SX_POS++)) || true; sx_parse_exponent || return; sx_binary "$op" "$a" "$RET"; a=$RET
+  done
+  RET=$a
 }
 
 sx_parse_exponent() {
   sx_parse_unary || return; local a=$RET
-  if sx_accept '**'; then
-    sx_parse_exponent || return; sx_form @pow "$a" "$RET"
+  if sx_accept_operator pow; then sx_parse_exponent || return; sx_form @pow "$a" "$RET"
   else RET=$a; fi
 }
 
 sx_parse_unary() {
-  local typ=${SX_TOK_TYPE[SX_POS]} op=${SX_TOK_VAL[SX_POS]}
-  case "$typ:$op" in
-    'op:!'|'id:not') ((SX_POS++)) || true; sx_parse_unary || return; sx_form not "$RET" ;;
-    'op:-') ((SX_POS++)) || true; sx_parse_unary || return; sx_form - "$RET" ;;
-    'op:~') ((SX_POS++)) || true; sx_parse_unary || return; sx_form bit-not "$RET" ;;
+  local typ=${SX_TOK_TYPE[SX_POS]} raw=${SX_TOK_VAL[SX_POS]}
+  if sx_operator_at "$SX_POS"; then
+    local op=$SX_OPERATOR
+    case $op in
+      not) ((SX_POS++)) || true; sx_parse_unary || return; sx_form not "$RET"; return ;;
+      sub) ((SX_POS++)) || true; sx_parse_unary || return; sx_form - "$RET"; return ;;
+      bnot) ((SX_POS++)) || true; sx_parse_unary || return; sx_form bit-not "$RET"; return ;;
+    esac
+  fi
+  case "$typ:$raw" in
     'id:typeof') ((SX_POS++)) || true; sx_parse_unary || return; sx_form typeof "$RET" ;;
     'id:delete')
       ((SX_POS++)) || true; sx_parse_unary || return; local x=$RET
@@ -686,6 +825,7 @@ sx_parse_new() {
 }
 
 sx_trailing_lambda_lookahead() {
+  (( SX_TRAILING_CLOSURE_ENABLED )) || return 1
   sx_is '{' || return 1
   local i=$((SX_POS + 1))
   [[ ${SX_TOK_VAL[i]-} == '=>' && ${SX_TOK_TYPE[i]-} == op ]] && return 0
@@ -826,6 +966,13 @@ sx_parse_branch_value() {
   if sx_is '{'; then sx_parse_block; else sx_parse_assignment; fi
 }
 
+sx_parse_branch_head() {
+  local old=$SX_ARROW_SUPPRESS_POS
+  SX_ARROW_SUPPRESS_POS=$SX_POS
+  sx_parse_assignment || { SX_ARROW_SUPPRESS_POS=$old; return 1; }
+  SX_ARROW_SUPPRESS_POS=$old
+}
+
 sx_parse_cond_expr() {
   sx_expect cond || return; sx_expect '{' || return
   local -a conds=() vals=(); local fallback=nil
@@ -836,7 +983,7 @@ sx_parse_cond_expr() {
       sx_is '}' || { sx_error 'else must be the last cond branch'; return 1; }
       break
     fi
-    sx_parse_assignment || return; conds+=("$RET")
+    sx_parse_branch_head || return; conds+=("$RET")
     sx_expect '=>' || return; sx_parse_branch_value || return; vals+=("$RET"); sx_eat_semi
   done
   sx_expect '}' || return
@@ -858,7 +1005,7 @@ sx_parse_match_expr() {
       sx_is '}' || { sx_error 'else must be the last match branch'; return 1; }
       break
     fi
-    sx_parse_assignment || return; pats+=("$RET")
+    sx_parse_branch_head || return; pats+=("$RET")
     sx_expect '=>' || return; sx_parse_branch_value || return; vals+=("$RET"); sx_eat_semi
   done
   sx_expect '}' || return

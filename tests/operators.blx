@@ -1,0 +1,114 @@
+include "../lib/testing.blx";
+
+let t = testing.suite("operators");
+
+proto OpBox { init(v) { this.v = v; } }
+
+fn _arithmetic() {
+  testing.equal(2 plus 3, 2 + 3, null);
+  testing.equal(9 minus 4, 9 - 4, null);
+  testing.equal(6 times 7, 6 * 7, null);
+  testing.equal(20 divided_by 4, 20 / 4, null);
+  testing.equal(20 modulo 6, 20 % 6, null);
+  testing.equal(2 raised_to 8, 2 ** 8, null);
+  testing.equal(minus 5, -5, null);
+}
+t.test("arithmetic aliases", _arithmetic);
+
+fn _comparison() {
+  testing.equal(3 less_than 4, 3 < 4, null);
+  testing.equal(4 at_most 4, 4 <= 4, null);
+  testing.equal(5 greater_than 4, 5 > 4, null);
+  testing.equal(5 at_least 5, 5 >= 5, null);
+  testing.equal([1,2] equals [1,2], [1,2] == [1,2], null);
+  testing.equal(1 not_equals 2, 1 != 2, null);
+  let a = []; let b = [];
+  testing.equal(a is a, a === a, null);
+  testing.equal(a is_not b, a !== b, null);
+}
+t.test("comparison aliases", _comparison);
+
+fn _logicBits() {
+  testing.equal(true and false, true && false, null);
+  testing.equal(false or true, false || true, null);
+  testing.equal(not false, !false, null);
+  testing.equal(12 bit_and 10, 12 & 10, null);
+  testing.equal(12 bit_or 3, 12 | 3, null);
+  testing.equal(12 bit_xor 10, 12 ^ 10, null);
+  testing.equal(bit_not 0, ~0, null);
+  testing.equal(3 shift_left 4, 3 << 4, null);
+  testing.equal(48 shift_right 4, 48 >> 4, null);
+}
+t.test("logic and bit aliases", _logicBits);
+
+fn _relations() {
+  let o = {x: 1};
+  testing.equal("x" in o, "x" @ o, null);
+  testing.equal("y" not_in o, "y" !@ o, null);
+  let b = new OpBox(1);
+  testing.equal(b instanceof OpBox, b <: OpBox, null);
+  testing.equal(b not_instanceof Array, b !<: Array, null);
+}
+t.test("relation aliases", _relations);
+
+fn _composition() {
+  testing.equal(null coalesce 9, null ?? 9, null);
+  testing.equal(1 through 4, 1..4, null);
+  testing.equal(1 before 4, 1..<4, null);
+  fn inc(x) { return x + 1; }
+  fn tri(a,b,c) { return a*100+b*10+c; }
+  testing.equal(41 pipe inc, 41 |> inc, null);
+  testing.equal(2 pipe_last tri(3,4), 2 |>> tri(3,4), null);
+}
+t.test("range/nullish/pipeline aliases", _composition);
+
+fn _prefixMix() {
+  testing.equal((plus 20 22), (+ 20 22), null);
+  testing.equal((times 6 7), (* 6 7), null);
+  testing.equal((and true true), true, null);
+}
+t.test("word operators remain usable in S forms", _prefixMix);
+
+fn _layoutWords() {
+  let n = 1
+    plus 2
+    times 3;
+  testing.equal(n, 7, null);
+
+  let ok = true
+    and false
+    or true;
+  testing.equal(ok, true, null);
+}
+t.test("word operators compose with layout continuation", _layoutWords);
+
+fn _canonicalSpellings() {
+  testing.equal(2 add 3, 5, null);
+  testing.equal(9 sub 4, 5, null);
+  testing.equal(6 mul 7, 42, null);
+  testing.equal(20 div 4, 5, null);
+  testing.equal(20 mod 6, 2, null);
+  testing.equal(2 pow 8, 256, null);
+  testing.equal(3 lt 4, true, null);
+  testing.equal(4 le 4, true, null);
+  testing.equal(5 gt 4, true, null);
+  testing.equal(5 ge 5, true, null);
+  testing.equal(4 eq 4.0, true, null);
+  testing.equal(1 ne 2, true, null);
+  let a = []; let b = [];
+  testing.equal(a ident a, true, null);
+  testing.equal(a nident b, true, null);
+  testing.equal(12 band 10, 8, null);
+  testing.equal(12 bor 3, 15, null);
+  testing.equal(12 bxor 10, 6, null);
+  testing.equal(bnot 0, bit_not 0, null);
+  testing.equal(3 shl 4, 48, null);
+  testing.equal(48 shr 4, 3, null);
+  testing.equal(1 range_inc 3, [1,2,3], null);
+  testing.equal(1 range_exc 3, [1,2], null);
+  fn inc(x) { return x + 1; }
+  testing.equal(41 pipe_first inc, 42, null);
+}
+t.test("canonical operator names are source spellings", _canonicalSpellings);
+
+t.report();

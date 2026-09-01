@@ -21,6 +21,7 @@ BL_FN_CALL=nil
 BL_FN_APPLY=nil
 BL_FN_BIND=nil
 BL_SEQ=0
+BL_GENSYM_SEQ=0
 BL_GC_LAST_SEQ=0
 BL_GC_RUNNING=0
 RET=
@@ -55,6 +56,16 @@ bl_make_bytes_from_hex() {
   bl_make_bytes "${xs[@]}"
 }
 bl_make_symbol() { bl_alloc; BL_TYPE[$RET]=symbol; BL_A[$RET]=$1; }
+# Generated symbols carry an identity source syntax cannot produce.  BL_C is a
+# debug spelling only; environment lookup/equality/hash use BL_A, so no source
+# identifier can capture or be captured by a generated binding.
+bl_make_gensym() {
+  local debug=${1:-generated}
+  ((++BL_GENSYM_SEQ)) || true
+  bl_alloc; BL_TYPE[$RET]=symbol
+  BL_A[$RET]=$'\x1f'"g$BL_GENSYM_SEQ"
+  BL_C[$RET]=$debug
+}
 bl_cons() { local a=$1 b=$2; bl_alloc; BL_TYPE[$RET]=cons; BL_A[$RET]=$a; BL_B[$RET]=$b; }
 bl_make_builtin() { local name=$1 mode=${2:-plain}; bl_alloc; BL_TYPE[$RET]=builtin; BL_A[$RET]=$name; BL_C[$RET]=$mode; [[ $BL_FUNCTION_PROTO != nil ]] && BL_PROTO[$RET]=$BL_FUNCTION_PROTO; }
 bl_make_closure() { local fn=$1 env=$2 params=$3; bl_alloc; BL_TYPE[$RET]=closure; BL_A[$RET]=$fn; BL_B[$RET]=$env; BL_C[$RET]=$params; [[ $BL_FUNCTION_PROTO != nil ]] && BL_PROTO[$RET]=$BL_FUNCTION_PROTO; }
@@ -187,7 +198,10 @@ bl_repr() {
       printf ']'
       ;;
     string) bl_escape_string "${BL_A[$v]}"; printf '"%s"' "$RET" ;;
-    symbol) printf '%s' "${BL_A[$v]}" ;;
+    symbol)
+      if [[ -n ${BL_C[$v]-} ]]; then printf '#<generated:%s>' "${BL_C[$v]}"
+      else printf '%s' "${BL_A[$v]}"; fi
+      ;;
     builtin) printf '<builtin %s>' "${BL_A[$v]}" ;;
     closure|compiled|bound) printf '<function>' ;;
     array)
@@ -706,7 +720,8 @@ bl_value_to_string() {
   local v=$1 fn out
   case $v in nil|true|false) RET=$v; return;; esac
   case ${BL_TYPE[$v]-} in
-    string|int|float|symbol) RET=${BL_A[$v]} ;;
+    string|int|float) RET=${BL_A[$v]} ;;
+    symbol) RET=${BL_C[$v]-${BL_A[$v]}} ;;
     object|array|bytes|builtin|closure|compiled|bound)
       bl_prop_get_key "$v" __str__; fn=$RET
       if [[ $fn != nil ]]; then
@@ -1119,10 +1134,93 @@ bl_builtin_attempt() {
 
 # Environment and filesystem primitives intentionally expose capability-sized
 # operations; path manipulation and policy belong in libraries.
-bl_builtin_env_get() { bl_expect_min_arity $# 1 env.get || return; bl_string_value "$1" || return; local k=$RET; if [[ -v $k ]]; then bl_make_string "${!k}"; elif (($#>=2)); then RET=$2; else RET=nil; fi; }
-bl_builtin_env_has() { bl_expect_arity $# 1 env.has || return; bl_string_value "$1" || return; [[ -v $RET ]] && RET=true || RET=false; }
-bl_builtin_env_set() { bl_expect_arity $# 2 env.set || return; bl_string_value "$1" || return; local k=$RET; [[ $k =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo 'BLisp: invalid environment variable name' >&2; return 1; }; bl_string_value "$2" || return; printf -v "$k" '%s' "$RET"; export "$k"; RET=$2; }
-bl_builtin_env_unset() { bl_expect_arity $# 1 env.unset || return; bl_string_value "$1" || return; local k=$RET; [[ $k =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || { echo 'BLisp: invalid environment variable name' >&2; return 1; }; unset "$k"; RET=nil; }
+#
+# The language-visible process environment is deliberately isolated from Bash's
+# variable namespace.  Exposing `printf -v "$user_name"` / `${!user_name}` here
+# lets ordinary programs overwrite allocator/parser/runtime state.  Instead we
+# snapshot the inherited *exported* environment once at runtime initialization
+# and mutate this explicit map.  Child processes are launched with exactly this
+# map (plus an optional per-call overlay), so interpreted and compiled programs
+# have the same semantics without depending on Bash local/global scoping.
+declare -Ag BL_PROCESS_ENV=()
+declare -ag BL_PROCESS_ENV_ARGS=()
+
+bl_env_name_valid() {
+  # Unix environment entries are NAME=VALUE byte strings.  BLisp strings cannot
+  # contain NUL already; disallow only the structural '=' and the empty name
+  # rather than imposing Bash identifier syntax on the language.
+  [[ -n $1 && $1 != *'='* ]]
+}
+
+bl_process_env_init() {
+  BL_PROCESS_ENV=()
+  local entry name value
+  # Read the actual inherited process environment rather than Bash's exported
+  # shell-variable namespace.  Environment names are not required to be valid
+  # Bash identifiers, and exposing only `compgen -e` would accidentally make
+  # the language model depend on what Bash chose to import as variables.
+  while IFS= read -r -d '' entry; do
+    [[ $entry == *=* ]] || continue
+    name=${entry%%=*}; value=${entry#*=}
+    bl_env_name_valid "$name" || continue
+    BL_PROCESS_ENV["$name"]=$value
+  done < <(command env -0)
+}
+
+bl_process_env_build_args() {
+  local overlay=${1:-nil} k i count v
+  local -A merged=()
+  for k in "${!BL_PROCESS_ENV[@]}"; do merged["$k"]=${BL_PROCESS_ENV[$k]}; done
+  if [[ $overlay != nil ]]; then
+    [[ ${BL_TYPE[$overlay]-} == object ]] || { echo 'BLisp: process env must be object or nil' >&2; return 1; }
+    count=${BL_KEY_COUNT[$overlay]-0}
+    for ((i=0;i<count;++i)); do
+      k=${BL_KEY_AT["$overlay|$i"]-}
+      [[ -v 'BL_PROP["'$overlay'|'$k'"]' ]] || continue
+      bl_env_name_valid "$k" || { printf 'BLisp: invalid environment variable name: %q\n' "$k" >&2; return 1; }
+      v=${BL_PROP["$overlay|$k"]}
+      if [[ $v == nil ]]; then
+        unset 'merged[$k]'
+      else
+        bl_string_value "$v" || return
+        merged["$k"]=$RET
+      fi
+    done
+  fi
+  BL_PROCESS_ENV_ARGS=()
+  # Environment order has no semantic meaning.  Do not serialize keys through a
+  # newline-delimited helper: Unix environment names may contain newlines even
+  # though they cannot contain '=' or NUL.
+  for k in "${!merged[@]}"; do BL_PROCESS_ENV_ARGS+=("$k=${merged[$k]}"); done
+}
+
+bl_builtin_env_get() {
+  bl_expect_min_arity $# 1 env.get || return
+  bl_string_value "$1" || return; local k=$RET
+  bl_env_name_valid "$k" || { bl_raise_error value "invalid environment variable name"; return; }
+  if [[ -v 'BL_PROCESS_ENV[$k]' ]]; then bl_make_string "${BL_PROCESS_ENV[$k]}"
+  elif (($#>=2)); then RET=$2
+  else RET=nil
+  fi
+}
+bl_builtin_env_has() {
+  bl_expect_arity $# 1 env.has || return
+  bl_string_value "$1" || return; local k=$RET
+  bl_env_name_valid "$k" || { bl_raise_error value "invalid environment variable name"; return; }
+  [[ -v 'BL_PROCESS_ENV[$k]' ]] && RET=true || RET=false
+}
+bl_builtin_env_set() {
+  bl_expect_arity $# 2 env.set || return
+  bl_string_value "$1" || return; local k=$RET
+  bl_env_name_valid "$k" || { bl_raise_error value "invalid environment variable name"; return; }
+  bl_string_value "$2" || return; BL_PROCESS_ENV["$k"]=$RET; RET=$2
+}
+bl_builtin_env_unset() {
+  bl_expect_arity $# 1 env.unset || return
+  bl_string_value "$1" || return; local k=$RET
+  bl_env_name_valid "$k" || { bl_raise_error value "invalid environment variable name"; return; }
+  unset 'BL_PROCESS_ENV[$k]'; RET=nil
+}
 
 bl_builtin_fs_exists() { bl_expect_arity $# 1 fs.exists || return; bl_string_value "$1" || return; [[ -e $RET ]] && RET=true || RET=false; }
 bl_builtin_fs_is_file() { bl_expect_arity $# 1 fs.isFile || return; bl_string_value "$1" || return; [[ -f $RET ]] && RET=true || RET=false; }
@@ -1139,7 +1237,17 @@ bl_builtin_fs_list() {
   bl_make_array "${out[@]}"
 }
 
-bl_option_get() { local opts=$1 key=$2 default=$3; if [[ $opts == nil ]]; then RET=$default; return; fi; [[ ${BL_TYPE[$opts]-} == object ]] || { echo 'BLisp: options must be object or nil' >&2; return 1; }; bl_prop_get_key "$opts" "$key"; [[ $RET == nil ]] && RET=$default; }
+bl_option_get() {
+  local opts=$1 key=$2 default=$3
+  if [[ $opts == nil ]]; then RET=$default; return 0; fi
+  [[ ${BL_TYPE[$opts]-} == object ]] || { echo 'BLisp: options must be object or nil' >&2; return 1; }
+  bl_prop_get_key "$opts" "$key" || return
+  [[ $RET == nil ]] && RET=$default
+  # A present, non-nil option is success too.  The old one-liner leaked the
+  # false status of the `[[ $RET == nil ]]` test and made every non-null option
+  # abort its caller while leaving RET set to the option value.
+  return 0
+}
 bl_builtin_process_run() {
   bl_expect_min_arity $# 1 process.run || return
   local av=$1 opts=${2:-nil}; bl_iter_values "$av" || return; local -a vals=("${BL_ITER_RESULT[@]}") cmd=(); local v
@@ -1150,16 +1258,13 @@ bl_builtin_process_run() {
   bl_option_get "$opts" stdin nil || { rm -rf "$tmp"; return; }; stdin=$RET
   bl_option_get "$opts" env nil || { rm -rf "$tmp"; return; }; envobj=$RET
   if [[ $stdin == nil ]]; then : > "$in"; elif [[ ${BL_TYPE[$stdin]-} == bytes ]]; then bl_bytes_write_path "$stdin" "$in" || { rm -rf "$tmp"; return; }; elif [[ ${BL_TYPE[$stdin]-} == string ]]; then printf '%s' "${BL_A[$stdin]}" > "$in" || { rm -rf "$tmp"; return; }; else echo 'BLisp: process stdin must be string, bytes, or nil' >&2; rm -rf "$tmp"; return 1; fi
-  local -a envargs=(); local i k count
-  if [[ $envobj != nil ]]; then
-    [[ ${BL_TYPE[$envobj]-} == object ]] || { echo 'BLisp: process env must be object' >&2; rm -rf "$tmp"; return 1; }
-    count=${BL_KEY_COUNT[$envobj]-0}; for ((i=0;i<count;++i)); do k=${BL_KEY_AT["$envobj|$i"]-}; [[ -v 'BL_PROP["$envobj|$k"]' ]] || continue; bl_string_value "${BL_PROP["$envobj|$k"]}" || { rm -rf "$tmp"; return; }; envargs+=("$k=$RET"); done
-  fi
+  bl_process_env_build_args "$envobj" || { rm -rf "$tmp"; return; }
+  local -a envargs=("${BL_PROCESS_ENV_ARGS[@]}")
   local status
   if [[ -n $cwd ]]; then
-    if ( builtin cd -- "$cwd" && if ((${#envargs[@]})); then command env "${envargs[@]}" "${cmd[@]}"; else command "${cmd[@]}"; fi ) < "$in" > "$out" 2> "$err"; then status=0; else status=$?; fi
+    if ( builtin cd -- "$cwd" && command env -i "${envargs[@]}" "${cmd[@]}" ) < "$in" > "$out" 2> "$err"; then status=0; else status=$?; fi
   else
-    if ( if ((${#envargs[@]})); then command env "${envargs[@]}" "${cmd[@]}"; else command "${cmd[@]}"; fi ) < "$in" > "$out" 2> "$err"; then status=0; else status=$?; fi
+    if ( command env -i "${envargs[@]}" "${cmd[@]}" ) < "$in" > "$out" 2> "$err"; then status=0; else status=$?; fi
   fi
   bl_bytes_read_path "$out" || { rm -rf "$tmp"; return; }; local stdout=$RET
   bl_bytes_read_path "$err" || { rm -rf "$tmp"; return; }; local stderr=$RET
@@ -1176,15 +1281,12 @@ bl_builtin_process_spawn() {
   bl_option_get "$opts" stdin nil || { rm -rf "$tmp"; return; }; stdin=$RET
   bl_option_get "$opts" env nil || { rm -rf "$tmp"; return; }; envobj=$RET
   if [[ $stdin == nil ]]; then : > "$in"; elif [[ ${BL_TYPE[$stdin]-} == bytes ]]; then bl_bytes_write_path "$stdin" "$in" || { rm -rf "$tmp"; return; }; elif [[ ${BL_TYPE[$stdin]-} == string ]]; then printf '%s' "${BL_A[$stdin]}" > "$in" || { rm -rf "$tmp"; return; }; else echo 'BLisp: process stdin must be string, bytes, or nil' >&2; rm -rf "$tmp"; return 1; fi
-  local -a envargs=(); local i k count
-  if [[ $envobj != nil ]]; then
-    [[ ${BL_TYPE[$envobj]-} == object ]] || { echo 'BLisp: process env must be object' >&2; rm -rf "$tmp"; return 1; }
-    count=${BL_KEY_COUNT[$envobj]-0}; for ((i=0;i<count;++i)); do k=${BL_KEY_AT["$envobj|$i"]-}; [[ -v 'BL_PROP["$envobj|$k"]' ]] || continue; bl_string_value "${BL_PROP["$envobj|$k"]}" || { rm -rf "$tmp"; return; }; envargs+=("$k=$RET"); done
-  fi
+  bl_process_env_build_args "$envobj" || { rm -rf "$tmp"; return; }
+  local -a envargs=("${BL_PROCESS_ENV_ARGS[@]}")
   (
     set +e
     if [[ -n $cwd ]]; then builtin cd -- "$cwd" || { printf '%d\n' 125 > "$statusf"; exit 0; }; fi
-    if ((${#envargs[@]})); then command env "${envargs[@]}" "${cmd[@]}"; else command "${cmd[@]}"; fi
+    command env -i "${envargs[@]}" "${cmd[@]}"
     local_rc=$?
     printf '%d\n' "$local_rc" > "$statusf"
     exit 0
@@ -1255,7 +1357,22 @@ bl_builtin_process_handle_close() {
   rm -rf -- "$BL_PROC_DIR" || return; bl_prop_set_key "$obj" closed true >/dev/null; RET=nil
 }
 
-bl_builtin_process_which() { bl_expect_arity $# 1 process.which || return; bl_string_value "$1" || return; local p; p=$(command -v -- "$RET" 2>/dev/null) || { RET=nil; return 0; }; bl_make_string "$p"; }
+bl_builtin_process_which() {
+  bl_expect_arity $# 1 process.which || return; bl_string_value "$1" || return
+  local name=$RET path dir candidate
+  if [[ $name == */* ]]; then
+    [[ -f $name && -x $name ]] || { RET=nil; return 0; }
+    bl_make_string "$name"; return
+  fi
+  path=${BL_PROCESS_ENV[PATH]-}
+  local oldifs=$IFS; IFS=:
+  for dir in $path; do
+    [[ -n $dir ]] || dir=.
+    candidate=$dir/$name
+    if [[ -f $candidate && -x $candidate ]]; then IFS=$oldifs; bl_make_string "$candidate"; return; fi
+  done
+  IFS=$oldifs; RET=nil
+}
 bl_builtin_exit() { bl_expect_min_arity $# 0 exit || return; local code=0; if (($#)); then bl_int_value "$1" || return; code=$RET; fi; exit "$code"; }
 
 bl_builtin_random_bytes() { bl_expect_arity $# 1 randomBytes || return; bl_int_value "$1" || return; local n=$RET; ((n>=0)) || { echo 'BLisp: randomBytes length must be >= 0' >&2; return 1; }; local text x; text=$(od -An -N "$n" -v -t u1 /dev/urandom) || return; local -a xs=(); for x in $text; do xs+=("$x"); done; bl_make_bytes "${xs[@]}"; }
@@ -1829,10 +1946,11 @@ bl_interpret_source() {
 }
 
 bl_runtime_init() {
-  BL_TYPE=(); BL_A=(); BL_B=(); BL_C=(); BL_SEQ=0
+  BL_TYPE=(); BL_A=(); BL_B=(); BL_C=(); BL_SEQ=0; BL_GENSYM_SEQ=0
   BL_PROP=(); BL_PROTO=(); BL_KEY_COUNT=(); BL_KEY_AT=(); BL_ARR_LEN=(); BL_BYTES_LEN=(); BL_BYTE_AT=()
   BL_OBJECT_PROTO=nil; BL_ARRAY_PROTO=nil; BL_FUNCTION_PROTO=nil; BL_STRING_PROTO=nil; BL_BYTES_PROTO=nil; BL_TCP_PROTO=nil; BL_FILE_PROTO=nil; BL_FN_CALL=nil; BL_FN_APPLY=nil; BL_FN_BIND=nil
   BL_ENV_PARENT=(); BL_ENV_BIND=(); BL_ENV_CONST=(); BL_ENV_SEQ=0
   BL_USER_ARGV=(); BL_FLOW=; BL_FLOW_VALUE=nil; BL_THROWN=0; BL_THROW_VALUE=nil; BL_GC_VMARK=(); BL_GC_EMARK=(); BL_GC_LAST_SEQ=0; BL_GC_RUNNING=0
+  bl_process_env_init
   bl_install_builtins
 }

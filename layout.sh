@@ -47,12 +47,17 @@ sx_layout_alias sx_parse_match_expr sx_parse_match_expr_without_layout
 # mixing rule: explicit delimiters always win locally; layout resumes outside.
 
 sx_layout_starts_continuation() {
-  local s=$1 op
+  local s=$1 op word canon
   s=${s#"${s%%[![:space:]]*}"}
   for op in '|>>' '|>' '?.' '.' '??' '&&' '||'; do
     [[ $s == "$op"* ]] && return 0
   done
-  [[ $s == 'and '* || $s == 'or '* ]]
+  # Word-operator aliases are sourced from surface.sh's canonical table so
+  # layout and the expression grammar cannot silently grow different lists.
+  word=${s%%[^A-Za-z0-9_]*}
+  [[ -n $word ]] || return 1
+  canon=${SX_OPERATOR_CANON[$word]-}
+  [[ -n $canon ]] && sx_operator_canon_is_infix "$canon"
 }
 
 sx_layout_ends_continuation() {
@@ -64,6 +69,10 @@ sx_layout_ends_continuation() {
   for op in '<<=' '>>=' '+=' '-=' '*=' '/=' '%=' '&=' '|=' '^=' '===' '!==' '**' '==' '!=' '<=' '>=' '&&' '||' '<<' '>>' '??' '|>>' '|>' '=' '+' '-' '*' '/' '%' '<' '>' '&' '|' '^' '.' '?' ':' ','; do
     [[ $s == *"$op" ]] && return 0
   done
+  if [[ $s =~ ([A-Za-z_][A-Za-z0-9_]*)$ ]]; then
+    local word=${BASH_REMATCH[1]} canon=${SX_OPERATOR_CANON[${BASH_REMATCH[1]}]-}
+    [[ -n $canon ]] && sx_operator_canon_is_infix "$canon" && return 0
+  fi
   return 1
 }
 
@@ -340,10 +349,12 @@ sx_parse_block() {
 # Parse a header expression without allowing the following indented body to be
 # mistaken for vertical arguments to the condition itself.
 sx_layout_parse_header_expr() {
-  local old=$SX_LAYOUT_CALL_ENABLED
+  local old=$SX_LAYOUT_CALL_ENABLED old_trailing=$SX_TRAILING_CLOSURE_ENABLED
   SX_LAYOUT_CALL_ENABLED=0
-  sx_parse_assignment || { SX_LAYOUT_CALL_ENABLED=$old; return 1; }
+  SX_TRAILING_CLOSURE_ENABLED=0
+  sx_parse_assignment || { SX_LAYOUT_CALL_ENABLED=$old; SX_TRAILING_CLOSURE_ENABLED=$old_trailing; return 1; }
   SX_LAYOUT_CALL_ENABLED=$old
+  SX_TRAILING_CLOSURE_ENABLED=$old_trailing
 }
 
 # Arrow closures may use an indented full body.  The ordinary parser still
@@ -571,7 +582,9 @@ sx_parse_cond_expr() {
       sx_is_dedent || { sx_error 'else must be the last cond branch'; return 1; }
       break
     fi
-    sx_layout_parse_header_expr || return; conds+=("$RET")
+    local old_suppress=$SX_ARROW_SUPPRESS_POS; SX_ARROW_SUPPRESS_POS=$SX_POS
+    sx_layout_parse_header_expr || { SX_ARROW_SUPPRESS_POS=$old_suppress; return; }
+    SX_ARROW_SUPPRESS_POS=$old_suppress; conds+=("$RET")
     sx_expect '=>' || return
     sx_parse_branch_value || return; vals+=("$RET")
     sx_skip_nl
@@ -586,7 +599,15 @@ sx_parse_match_expr() {
   local save=$SX_POS
   sx_expect match || return
   sx_layout_parse_header_expr || return; local subject=$RET
-  if sx_is '{'; then SX_POS=$save; sx_parse_match_expr_without_layout; return; fi
+  if sx_is '{'; then
+    SX_POS=$save
+    local old_trailing=$SX_TRAILING_CLOSURE_ENABLED
+    SX_TRAILING_CLOSURE_ENABLED=0
+    sx_parse_match_expr_without_layout
+    local st=$?
+    SX_TRAILING_CLOSURE_ENABLED=$old_trailing
+    return $st
+  fi
   sx_layout_group_ahead || { sx_error "match expects '{' or an indented branch group"; return 1; }
   sx_accept_nl; sx_accept_indent; sx_skip_nl
   sx_gensym; local tmp=$RET
@@ -599,7 +620,9 @@ sx_parse_match_expr() {
       sx_is_dedent || { sx_error 'else must be the last match branch'; return 1; }
       break
     fi
-    sx_layout_parse_header_expr || return; pats+=("$RET")
+    local old_suppress=$SX_ARROW_SUPPRESS_POS; SX_ARROW_SUPPRESS_POS=$SX_POS
+    sx_layout_parse_header_expr || { SX_ARROW_SUPPRESS_POS=$old_suppress; return; }
+    SX_ARROW_SUPPRESS_POS=$old_suppress; pats+=("$RET")
     sx_expect '=>' || return
     sx_parse_branch_value || return; vals+=("$RET")
     sx_skip_nl

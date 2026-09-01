@@ -1,0 +1,68 @@
+include "../lib/testing.blx";
+
+let t = testing.suite("environment");
+
+fn _isolatedFromRuntime() {
+  // These names are real Bash implementation globals.  Mutating the BLisp
+  // process environment must not mutate the interpreter/compiler itself.
+  env.set("BL_SEQ", "poison");
+  env.set("RET", "not-a-runtime-value");
+  testing.equal(env.get("BL_SEQ"), "poison", null);
+  testing.equal(env.get("RET"), "not-a-runtime-value", null);
+
+  // Force allocations/evaluation after the colliding names are set.
+  let xs = [1, 2, 3].map(x => x * 10);
+  testing.equal(xs, [10, 20, 30], null);
+}
+t.test("process env cannot overwrite Bash runtime state", _isolatedFromRuntime);
+
+fn _childInheritance() {
+  env.set("BLISP_ENV_TEST", "from-language");
+  let r = process.run(["sh", "-c", "printf %s \"$BLISP_ENV_TEST\""]);
+  testing.equal(r.status, 0, null);
+  testing.equal(r.stdout.decode(), "from-language", null);
+}
+t.test("children inherit the BLisp process environment", _childInheritance);
+
+fn _childOverlay() {
+  env.set("BLISP_ENV_TEST", "base");
+  let r = process.run(
+    ["sh", "-c", "printf '%s/%s' \"${BLISP_ENV_TEST-unset}\" \"${ONLY_CHILD-unset}\""],
+    {env: {BLISP_ENV_TEST: null, ONLY_CHILD: "overlay"}}
+  );
+  testing.equal(r.status, 0, null);
+  testing.equal(r.stdout.decode(), "unset/overlay", null);
+  // Overlay is per-child and must not mutate the process environment.
+  testing.equal(env.get("BLISP_ENV_TEST"), "base", null);
+  testing.equal(env.has("ONLY_CHILD"), false, null);
+}
+t.test("per-child env overlays can replace/remove without leaking", _childOverlay);
+
+fn _spawnInheritance() {
+  env.set("BLISP_SPAWN_TEST", "async-ok");
+  let p = process.spawn(["sh", "-c", "printf %s \"$BLISP_SPAWN_TEST\""]);
+  let result = p.result();
+  testing.equal(result.status, 0, null);
+  testing.equal(result.stdout.decode(), "async-ok", null);
+  p.close();
+}
+t.test("async children use the same environment model", _spawnInheritance);
+
+fn _whichUsesLanguagePath() {
+  let oldPath = env.get("PATH", "");
+  env.set("PATH", "/definitely/not/a/path");
+  testing.equal(process.which("sh"), null, null);
+  env.set("PATH", oldPath);
+  testing.equal(process.which("sh") != null, true, null);
+}
+t.test("process.which follows BLisp PATH, not Bash PATH", _whichUsesLanguagePath);
+
+fn _processOptionsAreRealOptions() {
+  let cwd = fs.cwd();
+  let r = process.run(["sh", "-c", "printf '%s|' \"$PWD\"; cat"], {cwd, stdin: "hello"});
+  testing.equal(r.status, 0, null);
+  testing.equal(r.stdout.decode(), cwd + "|hello", null);
+}
+t.test("non-null process options do not abort option parsing", _processOptionsAreRealOptions);
+
+t.report();
