@@ -210,6 +210,9 @@ bl_repr() {
       ;;
     builtin) printf '<builtin %s>' "${BL_A[$v]}" ;;
     closure|compiled|bound) printf '<function>' ;;
+    range)
+      if [[ ${BL_C[$v]-0} == 1 ]]; then printf '%s..%s' "${BL_A[$v]}" "${BL_B[$v]}"; else printf '%s..<%s' "${BL_A[$v]}" "${BL_B[$v]}"; fi
+      ;;
     array)
       printf '['; local __i __n=${BL_ARR_LEN[$v]-0}
       for ((__i=0;__i<__n;++__i)); do ((__i)) && printf ', '; bl_prop_get_key "$v" "$__i"; bl_repr "$RET"; done
@@ -631,6 +634,24 @@ bl_prop_get_key() {
   if [[ ${BL_TYPE[$obj]-} == string && $key =~ ^[0-9]+$ ]]; then
     local i=$key s=${BL_A[$obj]}; (( i >= 0 && i < ${#s} )) && bl_make_string "${s:i:1}" || RET=nil; return
   fi
+  if [[ ${BL_TYPE[$obj]-} == range ]]; then
+    local __rs=${BL_A[$obj]} __re=${BL_B[$obj]} __ri=${BL_C[$obj]-0} __step=1 __len
+    ((__rs > __re)) && __step=-1
+    if ((__ri)); then __len=$(( (__re-__rs)*__step + 1 )); else __len=$(( (__re-__rs)*__step )); fi
+    ((__len < 0)) && __len=0
+    case $key in
+      start) bl_make_int "$__rs"; return ;;
+      end) bl_make_int "$__re"; return ;;
+      step) bl_make_int "$__step"; return ;;
+      inclusive) ((__ri)) && RET=true || RET=false; return ;;
+      length) bl_make_int "$__len"; return ;;
+    esac
+    if [[ $key =~ ^[0-9]+$ ]]; then
+      local __idx=$key
+      if ((__idx < __len)); then bl_make_int "$((__rs + __idx*__step))"; else RET=nil; fi
+      return
+    fi
+  fi
   case ${BL_TYPE[$obj]-} in builtin|closure|compiled|bound)
     case $key in
       # Constructor prototype objects are materialized lazily, but Function
@@ -667,15 +688,17 @@ bl_prop_delete_key() {
 bl_iter_begin() {
   local v=$1 fn it
   case ${BL_TYPE[$v]-} in
-    array|bytes|string|cons)
+    array|bytes|string|cons|range)
       bl_alloc; local cur=$RET; BL_TYPE[$cur]=iterator; BL_A[$cur]=$v
-      if [[ ${BL_TYPE[$v]} == cons ]]; then BL_B[$cur]=$v; else BL_B[$cur]=0; fi
+      if [[ ${BL_TYPE[$v]} == cons ]]; then BL_B[$cur]=$v
+      elif [[ ${BL_TYPE[$v]} == range ]]; then BL_B[$cur]=${BL_A[$v]}
+      else BL_B[$cur]=0; fi
       RET=$cur ;;
     object|builtin|closure|compiled|bound)
       bl_prop_get_key "$v" __iter__; fn=$RET
       [[ $fn != nil ]] || { echo 'BLisp: value is not iterable' >&2; return 1; }
       bl_apply_this "$fn" "$v" || return; it=$RET
-      case ${BL_TYPE[$it]-} in array|bytes|string|cons) bl_iter_begin "$it";; *) bl_prop_get_key "$it" next; [[ $RET != nil ]] || { echo 'BLisp: __iter__ result needs next()' >&2; return 1; }; RET=$it;; esac ;;
+      case ${BL_TYPE[$it]-} in array|bytes|string|cons|range) bl_iter_begin "$it";; *) bl_prop_get_key "$it" next; [[ $RET != nil ]] || { echo 'BLisp: __iter__ result needs next()' >&2; return 1; }; RET=$it;; esac ;;
     *) [[ $v == nil ]] && { bl_alloc; local cur=$RET; BL_TYPE[$cur]=iterator; BL_A[$cur]=nil; BL_B[$cur]=0; RET=$cur; return; }; echo 'BLisp: value is not iterable' >&2; return 1 ;;
   esac
 }
@@ -690,6 +713,15 @@ bl_iter_next() {
       array) idx=${BL_B[$it]}; if ((idx>=${BL_ARR_LEN[$src]-0})); then BL_ITER_DONE=1; RET=nil; else bl_prop_get_key "$src" "$idx"; BL_B[$it]=$((idx+1)); fi ;;
       bytes) idx=${BL_B[$it]}; if ((idx>=${BL_BYTES_LEN[$src]-0})); then BL_ITER_DONE=1; RET=nil; else bl_make_int "${BL_BYTE_AT["$src|$idx"]}"; BL_B[$it]=$((idx+1)); fi ;;
       string) idx=${BL_B[$it]}; local raw=${BL_A[$src]}; if ((idx>=${#raw})); then BL_ITER_DONE=1; RET=nil; else bl_make_string "${raw:idx:1}"; BL_B[$it]=$((idx+1)); fi ;;
+      range)
+        idx=${BL_B[$it]}; local __end=${BL_B[$src]} __inc=${BL_C[$src]-0} __step=1
+        ((${BL_A[$src]} > __end)) && __step=-1
+        if ((__step > 0)); then
+          if ((__inc ? idx > __end : idx >= __end)); then BL_ITER_DONE=1; RET=nil; return; fi
+        else
+          if ((__inc ? idx < __end : idx <= __end)); then BL_ITER_DONE=1; RET=nil; return; fi
+        fi
+        bl_make_int "$idx"; BL_B[$it]=$((idx+__step)) ;;
       cons) local cur=${BL_B[$it]}; if [[ $cur == nil ]]; then BL_ITER_DONE=1; RET=nil; else [[ ${BL_TYPE[$cur]-} == cons ]] || { echo 'BLisp: improper list is not iterable' >&2; return 1; }; RET=${BL_A[$cur]}; BL_B[$it]=${BL_B[$cur]}; fi ;;
       *) echo 'BLisp: corrupt native iterator' >&2; return 1 ;;
     esac
@@ -747,27 +779,26 @@ bl_builtin_typeof() {
   bl_expect_arity $# 1 typeof || return
   local t
   case $1 in nil) t=object;; true|false) t=boolean;; *)
-    case ${BL_TYPE[$1]-} in int|float) t=number;; string) t=string;; bytes) t=bytes;; builtin|closure|compiled|bound) t=function;; object|array|cons) t=object;; symbol) t=symbol;; *) t=invalid;; esac
+    case ${BL_TYPE[$1]-} in int|float) t=number;; string) t=string;; bytes) t=bytes;; builtin|closure|compiled|bound) t=function;; object|array|cons|range) t=object;; symbol) t=symbol;; *) t=invalid;; esac
     ;;
   esac
   bl_make_string "$t"
+}
+
+bl_make_range() {
+  local start=$1 end=$2 inclusive=$3
+  bl_alloc; local v=$RET
+  BL_TYPE[$v]=range; BL_A[$v]=$start; BL_B[$v]=$end; BL_C[$v]=$inclusive
+  BL_PROTO[$v]=${BL_OBJECT_PROTO:-nil}
+  RET=$v
 }
 
 bl_builtin_range_common() {
   local inclusive=$1; shift
   bl_expect_arity $# 2 range || return
   bl_int_value "$1" || return; local a=$RET
-  bl_int_value "$2" || return; local b=$RET step=1 i
-  ((a>b)) && step=-1
-  local -a out=()
-  if ((inclusive)); then
-    if ((step>0)); then for ((i=a;i<=b;i+=step)); do bl_make_int "$i"; out+=("$RET"); done
-    else for ((i=a;i>=b;i+=step)); do bl_make_int "$i"; out+=("$RET"); done; fi
-  else
-    if ((step>0)); then for ((i=a;i<b;i+=step)); do bl_make_int "$i"; out+=("$RET"); done
-    else for ((i=a;i>b;i+=step)); do bl_make_int "$i"; out+=("$RET"); done; fi
-  fi
-  bl_make_array "${out[@]}"
+  bl_int_value "$2" || return; local b=$RET
+  bl_make_range "$a" "$b" "$inclusive"
 }
 bl_builtin_range_inclusive() { bl_builtin_range_common 1 "$@"; }
 bl_builtin_range_exclusive() { bl_builtin_range_common 0 "$@"; }
@@ -778,6 +809,12 @@ bl_builtin_len() {
     string) bl_make_int "${#BL_A[$v]}" ;;
     bytes) bl_make_int "${BL_BYTES_LEN[$v]-0}" ;;
     array) bl_make_int "${BL_ARR_LEN[$v]-0}" ;;
+    range)
+      local __a=${BL_A[$v]} __b=${BL_B[$v]} __step=1 __n
+      ((__a > __b)) && __step=-1
+      if [[ ${BL_C[$v]-0} == 1 ]]; then __n=$(( (__b-__a)*__step + 1 )); else __n=$(( (__b-__a)*__step )); fi
+      ((__n < 0)) && __n=0
+      bl_make_int "$__n" ;;
     cons) cur=$v; while [[ $cur != nil ]]; do [[ ${BL_TYPE[$cur]-} == cons ]] || { echo 'BLisp: len on improper list' >&2; return 1; }; ((n++)) || true; cur=${BL_B[$cur]}; done; bl_make_int "$n" ;;
     object|builtin|closure|compiled|bound)
       bl_prop_get_key "$v" __len__; fn=$RET
@@ -793,7 +830,7 @@ bl_builtin_type_name() {
   local t
   case $1 in nil) t=nil;; true|false) t=bool;; *)
     case ${BL_TYPE[$1]-invalid} in
-      int) t=int;; float) t=float;; string) t=string;; bytes) t=bytes;; symbol) t=symbol;; cons) t=list;; array) t=array;; object) t=object;; builtin|closure|compiled|bound) t=function;; *) t=invalid;; esac
+      int) t=int;; float) t=float;; string) t=string;; bytes) t=bytes;; symbol) t=symbol;; cons) t=list;; array) t=array;; range) t=range;; object) t=object;; builtin|closure|compiled|bound) t=function;; *) t=invalid;; esac
   esac
   bl_make_string "$t"
 }
@@ -1094,6 +1131,7 @@ bl_hash_value() {
       if [[ $__norm =~ ^-?[0-9]+$ ]]; then BL_HASH=$__norm; else bl_hash_text "f:$__norm"; fi ;;
     string) bl_hash_text "s:${BL_A[$v]}" ;;
     symbol) bl_hash_text "y:${BL_A[$v]}" ;;
+    range) bl_hash_text "r:${BL_A[$v]}:${BL_B[$v]}:${BL_C[$v]-0}" ;;
     bytes)
       bl_unhashable 'mutable bytes values are not hashable'; return ;;
     array)
@@ -1773,6 +1811,8 @@ bl_equal_value_inner() {
   [[ $tx == "$ty" ]] || { RET=false; return; }
   case $tx in
     int|float|string|symbol) [[ ${BL_A[$x]} == "${BL_A[$y]}" ]] && RET=true || RET=false ;;
+    range)
+      [[ ${BL_A[$x]} == "${BL_A[$y]}" && ${BL_B[$x]} == "${BL_B[$y]}" && ${BL_C[$x]-0} == "${BL_C[$y]-0}" ]] && RET=true || RET=false ;;
     bytes)
       local __n=${BL_BYTES_LEN[$x]-0} __i
       [[ $__n == ${BL_BYTES_LEN[$y]-0} ]] || { RET=false; return; }

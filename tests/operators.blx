@@ -104,8 +104,8 @@ fn _canonicalSpellings() {
   testing.equal(bnot 0, bit_not 0, null);
   testing.equal(3 shl 4, 48, null);
   testing.equal(48 shr 4, 3, null);
-  testing.equal(1 range_inc 3, [1,2,3], null);
-  testing.equal(1 range_exc 3, [1,2], null);
+  testing.equal(toArray(1 range_inc 3), [1,2,3], null);
+  testing.equal(toArray(1 range_exc 3), [1,2], null);
   fn inc(x) { return x + 1; }
   testing.equal(41 pipe_first inc, 42, null);
 }

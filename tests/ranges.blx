@@ -1,0 +1,58 @@
+include "../lib/testing.blx";
+include "../lib/prelude.blx";
+
+let t = testing.suite("ranges");
+
+fn _shape() {
+  let r = 3..7;
+  testing.equal(type(r), "range", null);
+  testing.equal(r.start, 3, null);
+  testing.equal(r.end, 7, null);
+  testing.equal(r.step, 1, null);
+  testing.equal(r.inclusive, true, null);
+  testing.equal(r.length, 5, null);
+  testing.equal(len(r), 5, null);
+  testing.equal(r[0], 3, null);
+  testing.equal(r[4], 7, null);
+  testing.equal(r[5], null, null);
+}
+t.test("range metadata and indexing", _shape);
+
+fn _directions() {
+  testing.equal(toArray(1..4), [1,2,3,4], null);
+  testing.equal(toArray(1..<4), [1,2,3], null);
+  testing.equal(toArray(4..1), [4,3,2,1], null);
+  testing.equal(toArray(4..<1), [4,3,2], null);
+  testing.equal(toArray(3..<3), [], null);
+  testing.equal(toArray(3..3), [3], null);
+}
+t.test("inclusive exclusive ascending descending", _directions);
+
+fn _lazyHuge() {
+  let r = 1..1000000000;
+  testing.equal(len(r), 1000000000, null);
+  let it = iterator(r);
+  testing.equal(nextItem(it).value, 1, null);
+  testing.equal(nextItem(it).value, 2, null);
+  testing.equal(nextItem(it).value, 3, null);
+
+  let seen = [];
+  for x of r {
+    seen.push(x);
+    if (seen.length == 4) break;
+  }
+  testing.equal(seen, [1,2,3,4], null);
+}
+t.test("huge ranges stream without materialization", _lazyHuge);
+
+fn _valueSemantics() {
+  testing.equal(1..4, 1..4, null);
+  testing.equal(1..4 == 1..<4, false, null);
+  testing.equal(hash(1..4), hash(1..4), null);
+  let m = new HashMap();
+  m.set(1..4, "ok");
+  testing.equal(m.get(1..4), "ok", null);
+}
+t.test("ranges are immutable hashable values", _valueSemantics);
+
+t.report();

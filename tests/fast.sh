@@ -8,7 +8,7 @@ bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
 ./tests/includes.sh
 
 printf '%s\n' '[fast 2/3] focused interpreter/compiler suites (isolated, parallel)'
-suites=(operators hygiene environment hashability callables grammar layout ergonomics)
+suites=(operators ranges hygiene environment hashability callables grammar layout ergonomics)
 declare -A pids=()
 for name in "${suites[@]}"; do
   (

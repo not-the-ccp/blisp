@@ -255,6 +255,25 @@ Structural equality itself is independent of hashability. Cyclic arrays compare 
 cycle-safe bisimulation semantics rather than recursing forever, even though arrays cannot
 be hash keys.
 
+## Ranges are lazy immutable sequence values
+
+Range syntax denotes a range value, not an eagerly-created array:
+
+```blx
+let a = 1..5;      // inclusive
+let b = 1..<5;     // exclusive
+```
+
+Range construction and `len(range)` are O(1), including very large bounds. Ranges are
+iterable and indexable without materialization; `toArray(range)` is the explicit operation
+that allocates all elements. Descending bounds use a step of -1 automatically. A range
+exposes `start`, `end`, `step`, `inclusive`, and `length` as read-only semantic properties.
+
+Ranges are immutable value objects: structurally equal ranges compare equal and are hashable.
+This is deliberately different from mutable arrays, which are not hashable. Library code
+should accept generic iterables where possible instead of requiring callers to materialize a
+range merely to iterate it.
+
 ## Strings and bytes are intentionally distinct
 
 Text does not silently become binary data. Encoding is explicit:
