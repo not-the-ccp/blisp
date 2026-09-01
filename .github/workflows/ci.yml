@@ -18,9 +18,13 @@ jobs:
         run: bash tests/fast.sh
 
   stdlib-parity:
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Full standard-library parity
-        run: bash tests/stdlib-parity.sh
+      - name: Standard-library group ${{ matrix.group }} parity
+        run: bash tests/stdlib-parity.sh ${{ matrix.group }}
