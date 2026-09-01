@@ -1,0 +1,31 @@
+name: Bootstrap WIP source snapshot
+on:
+  push:
+    paths:
+      - 'snapshots/manifest.sha256'
+permissions:
+  contents: write
+jobs:
+  unpack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reassemble and verify snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat snapshots/part-* | base64 -d > /tmp/blisp.tar.gz
+          echo "dd3a16feacb6d0262ae955a73f7d32ecf78a38f82af38b3f9b5f3817ddb7bd2e  /tmp/blisp.tar.gz" | sha256sum -c -
+      - name: Replace bootstrap files with source tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          tmp=$(mktemp -d)
+          tar -xzf /tmp/blisp.tar.gz -C "$tmp"
+          rm -rf snapshots
+          cp -a "$tmp"/. .
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "WIP: import current BLisp source snapshot"
+          git push
