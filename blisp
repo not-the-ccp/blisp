@@ -28,7 +28,7 @@ load_stdlib_interpreted() {
 is_surface_file() { [[ $1 == *.blx || $1 == *.bx || $1 == *.blh ]]; }
 
 declare -Ag BL_INCLUDE_ACTIVE=() BL_INCLUDE_SEEN=()
-declare -ag BL_SOURCE_CHUNKS=() BL_SOURCE_CHUNK_FILES=()
+declare -ag BL_SOURCE_CHUNKS=() BL_SOURCE_CHUNK_FILES=() BL_SOURCE_CHUNK_LINES=()
 BL_SOURCE_REPLY=
 
 # `include` is a top-level source-loader directive, not an expression.  The
@@ -103,16 +103,17 @@ bl_loader_include_line() {
 }
 
 bl_source_chunk_add() {
-  local file=$1 text=$2
+  local file=$1 text=$2 line=${3:-1}
   [[ -z $text ]] && return 0
   BL_SOURCE_CHUNKS+=("$text")
   BL_SOURCE_CHUNK_FILES+=("$file")
+  BL_SOURCE_CHUNK_LINES+=("$line")
 }
 
 # Hybrid files stay as separate ordered chunks for parser performance, but
 # source loading itself has language-level semantics independent of chunking.
 bl_collect_hybrid_file() {
-  local file=$1 abs dir line child buf= depth=0 quote= block=0 indent trimmed st
+  local file=$1 abs dir line child buf= depth=0 quote= block=0 indent trimmed st lineno=0 buf_start=1
   abs=$(cd -- "$(dirname -- "$file")" 2>/dev/null && pwd -P)/$(basename -- "$file") || return
   [[ -f $abs ]] || { echo "blisp: include not found: $file" >&2; return 1; }
   [[ ${BL_INCLUDE_ACTIVE[$abs]-0} == 0 ]] || { echo "blisp: include cycle involving $abs" >&2; return 1; }
@@ -120,6 +121,7 @@ bl_collect_hybrid_file() {
   BL_INCLUDE_ACTIVE[$abs]=1; BL_INCLUDE_SEEN[$abs]=1; dir=${abs%/*}
 
   while IFS= read -r line || [[ -n $line ]]; do
+    ((lineno++)) || true
     trimmed=${line#"${line%%[![:space:]]*}"}
     indent=${#line}; indent=$((indent - ${#trimmed}))
 
@@ -132,9 +134,10 @@ bl_collect_hybrid_file() {
           echo "blisp: include is top-level only: $abs" >&2
           unset 'BL_INCLUDE_ACTIVE[$abs]'; return 1
         fi
-        bl_source_chunk_add "$abs" "$buf"; buf=
+        bl_source_chunk_add "$abs" "$buf" "$buf_start"; buf=
         child=$BL_INCLUDE_PATH; [[ $child == /* ]] || child="$dir/$child"
         bl_collect_hybrid_file "$child" || { unset 'BL_INCLUDE_ACTIVE[$abs]'; return 1; }
+        buf_start=$((lineno+1))
         continue
       else
         st=$?
@@ -146,34 +149,36 @@ bl_collect_hybrid_file() {
     bl_loader_scan_line "$line" "$depth" "$quote" "$block"
     depth=$BL_LOAD_DEPTH; quote=$BL_LOAD_QUOTE; block=$BL_LOAD_BLOCK_COMMENT
   done < "$abs"
-  bl_source_chunk_add "$abs" "$buf"
+  bl_source_chunk_add "$abs" "$buf" "$buf_start"
   unset 'BL_INCLUDE_ACTIVE[$abs]'
 }
 
 # Compatibility helper for code that still wants the expanded textual source.
 bl_expand_hybrid_file() {
-  BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=()
+  BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_SOURCE_CHUNK_LINES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=()
   bl_collect_hybrid_file "$1" || return
   BL_SOURCE_REPLY=
   local chunk; for chunk in "${BL_SOURCE_CHUNKS[@]}"; do BL_SOURCE_REPLY+="$chunk"$'\n'; done
 }
 
 bl_parse_surface_chunks() {
-  local -a all=() chunk
-  for chunk in "${BL_SOURCE_CHUNKS[@]}"; do
+  local -a all=(); local chunk file line_base i
+  for ((i=0;i<${#BL_SOURCE_CHUNKS[@]};++i)); do
+    chunk=${BL_SOURCE_CHUNKS[i]}; file=${BL_SOURCE_CHUNK_FILES[i]}; line_base=${BL_SOURCE_CHUNK_LINES[i]:-1}
     [[ -z ${chunk//[[:space:]]/} ]] && continue
-    bl_parse_surface_all "$chunk" || return
+    bl_parse_surface_all "$chunk" "$file" "$line_base" || return
     all+=("${BL_FORMS[@]}")
   done
   BL_FORMS=("${all[@]}")
 }
 
 bl_interpret_surface_chunks() {
-  local env=$1 chunk
+  local env=$1 chunk file line_base i
   RET=nil
-  for chunk in "${BL_SOURCE_CHUNKS[@]}"; do
+  for ((i=0;i<${#BL_SOURCE_CHUNKS[@]};++i)); do
+    chunk=${BL_SOURCE_CHUNKS[i]}; file=${BL_SOURCE_CHUNK_FILES[i]}; line_base=${BL_SOURCE_CHUNK_LINES[i]:-1}
     [[ -z ${chunk//[[:space:]]/} ]] && continue
-    bl_interpret_surface_source "$chunk" "$env" || return
+    bl_interpret_surface_source "$chunk" "$env" "$file" "$line_base" || return
   done
 }
 
@@ -186,7 +191,7 @@ cmd_run() {
   load_stdlib_interpreted || return
   local src
   if is_surface_file "$file"; then
-    BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=(); bl_collect_hybrid_file "$file" || return
+    BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_SOURCE_CHUNK_LINES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=(); bl_collect_hybrid_file "$file" || return
     bl_interpret_surface_chunks "$BL_GLOBAL_ENV"
   else
     src=$(cat -- "$file") || return; bl_interpret_source "$src" "$BL_GLOBAL_ENV"
@@ -205,7 +210,7 @@ cmd_evalx() {
   (($# == 1)) || { usage >&2; return 2; }
   bl_runtime_init
   load_stdlib_interpreted || return
-  bl_interpret_surface_source "$1" "$BL_GLOBAL_ENV" || return
+  bl_interpret_surface_source "$1" "$BL_GLOBAL_ENV" '<evalx>' || return
   bl_repr "$RET"; printf '\n'
 }
 
@@ -224,7 +229,7 @@ cmd_compile() {
   local std src
   std=$(cat "$SELF_DIR/stdlib.bl") || return
   if is_surface_file "$file"; then
-    BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=(); bl_collect_hybrid_file "$file" || return
+    BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_SOURCE_CHUNK_LINES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=(); bl_collect_hybrid_file "$file" || return
   else src=$(cat -- "$file") || return; fi
   bl_runtime_init
   if is_surface_file "$file"; then
@@ -257,7 +262,7 @@ cmd_replx() {
   printf 'BLisp hybrid REPL. One statement/expression per line; Ctrl-D exits.\n'
   while IFS= read -r -p 'blx> ' line; do
     [[ -z $line ]] && continue
-    if bl_interpret_surface_source "$line" "$BL_GLOBAL_ENV"; then bl_repr "$RET"; printf '\n'; fi
+    if bl_interpret_surface_source "$line" "$BL_GLOBAL_ENV" '<replx>'; then bl_repr "$RET"; printf '\n'; fi
   done
 }
 

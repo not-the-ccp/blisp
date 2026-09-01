@@ -2,7 +2,7 @@
 # BLisp-X surface parser: a JS/C-ish syntax that lowers to ordinary BLisp ASTs.
 # runtime.sh must already be sourced.
 
-declare -ag SX_TOK_TYPE=() SX_TOK_VAL=() SX_TOK_GAP=()
+declare -ag SX_TOK_TYPE=() SX_TOK_VAL=() SX_TOK_GAP=() SX_TOK_OFF=()
 SX_POS=0
 SX_GENSYM=0
 SX_CLASS_PARENT=nil
@@ -12,6 +12,12 @@ SX_TOKEN=
 SX_DATUM_MODE=0
 SX_TRAILING_CLOSURE_ENABLED=1
 SX_ARROW_SUPPRESS_POS=-1
+SX_SOURCE_NAME='<input>'
+SX_SOURCE_TEXT=
+SX_TOKEN_OFFSET=0
+SX_LAYOUT_DIAG_ACTIVE=0
+SX_LAYOUT_LEX_SOURCE=
+SX_SOURCE_LINE_BASE=1
 
 # Operator spellings are aliases for one canonical semantic operator.  A word
 # spelling and a symbolic spelling must never differ in precedence,
@@ -84,17 +90,72 @@ sx_operator_canon_is_infix() {
 sx_error() {
   local near='<eof>'
   (( SX_POS < ${#SX_TOK_VAL[@]} )) && near=${SX_TOK_VAL[SX_POS]}
-  printf 'BLisp hybrid parse error near token %d (%q): %s\n' "$SX_POS" "$near" "$*" >&2
+  local off=${SX_TOK_OFF[SX_POS]-${#SX_SOURCE_TEXT}} line col excerpt
+  sx_error_location "$off"
+  line=$SX_ERROR_LINE; col=$SX_ERROR_COL
+  local display_line=$((line + SX_SOURCE_LINE_BASE - 1))
+  sx_source_line "$SX_SOURCE_TEXT" "$line"; excerpt=$SX_ERROR_EXCERPT
+  printf '%s:%d:%d: BLisp hybrid parse error: %s (near %q)\n' "$SX_SOURCE_NAME" "$display_line" "$col" "$*" "$near" >&2
+  [[ -n $excerpt ]] && {
+    printf '  %s\n' "$excerpt" >&2
+    printf '  %*s^\n' "$((col-1))" '' >&2
+  }
   return 1
 }
 
+SX_ERROR_LINE=1
+SX_ERROR_COL=1
+SX_ERROR_EXCERPT=
+sx_line_col_in_source() {
+  local src=$1 off=$2 prefix line=1
+  (( off < 0 )) && off=0
+  (( off > ${#src} )) && off=${#src}
+  prefix=${src:0:off}
+  while [[ $prefix == *$'\n'* ]]; do prefix=${prefix#*$'\n'}; ((line++)) || true; done
+  SX_ERROR_LINE=$line
+  SX_ERROR_COL=$((${#prefix}+1))
+}
+
+sx_source_line() {
+  local src=$1 want=$2 line n=1
+  SX_ERROR_EXCERPT=
+  while IFS= read -r line || [[ -n $line ]]; do
+    if (( n == want )); then SX_ERROR_EXCERPT=$line; return 0; fi
+    ((n++)) || true
+  done <<< "$src"
+}
+
+sx_error_location() {
+  local off=$1
+  if (( SX_LAYOUT_DIAG_ACTIVE )); then
+    sx_line_col_in_source "$SX_LAYOUT_LEX_SOURCE" "$off"
+    local rewritten_line=$SX_ERROR_LINE rewritten_col=$SX_ERROR_COL line n=0 i=0 is_marker=0
+    while IFS= read -r line || [[ -n $line ]]; do
+      ((i++)) || true
+      is_marker=0
+      [[ $line == *"$SX_LAYOUT_M_NL"* || $line == *"$SX_LAYOUT_M_INDENT"* || $line == *"$SX_LAYOUT_M_DEDENT"* ]] && is_marker=1
+      (( ! is_marker )) && ((n++)) || true
+      if (( i == rewritten_line )); then
+        if (( is_marker )); then SX_ERROR_LINE=$((n+1)); SX_ERROR_COL=1
+        else SX_ERROR_LINE=$n; SX_ERROR_COL=$rewritten_col
+        fi
+        return
+      fi
+    done <<< "$SX_LAYOUT_LEX_SOURCE"
+    SX_ERROR_LINE=$((n+1)); SX_ERROR_COL=1
+    return
+  fi
+  sx_line_col_in_source "$SX_SOURCE_TEXT" "$off"
+}
+
 sx_tok() {
-  SX_TOK_TYPE+=("$1"); SX_TOK_VAL+=("$2"); SX_TOK_GAP+=("$3")
+  SX_TOK_TYPE+=("$1"); SX_TOK_VAL+=("$2"); SX_TOK_GAP+=("$3"); SX_TOK_OFF+=("$SX_TOKEN_OFFSET")
 }
 
 sx_lex() {
   local src=$1 i=0 n=${#1} c d q buf esc op gap=1
-  SX_TOK_TYPE=(); SX_TOK_VAL=(); SX_TOK_GAP=(); SX_POS=0
+  SX_SOURCE_TEXT=$src; SX_LAYOUT_DIAG_ACTIVE=0; SX_LAYOUT_LEX_SOURCE=
+  SX_TOK_TYPE=(); SX_TOK_VAL=(); SX_TOK_GAP=(); SX_TOK_OFF=(); SX_POS=0
   while (( i < n )); do
     c=${src:i:1}
     case $c in
@@ -111,6 +172,7 @@ sx_lex() {
       ((i+1<n)) || { echo 'BLisp hybrid: unterminated block comment' >&2; return 1; }
       ((i+=2)) || true; continue
     fi
+    SX_TOKEN_OFFSET=$i
     if [[ $c == b && ( ${src:i+1:1} == '"' || ${src:i+1:1} == "'" ) ]]; then
       q=${src:i+1:1}; ((i+=2)) || true; buf=; local hx ord h1 h2
       while ((i<n)); do
@@ -196,6 +258,7 @@ sx_lex() {
       *) printf 'BLisp hybrid lexer: unexpected character %q\n' "$c" >&2; return 1 ;;
     esac
   done
+  SX_TOKEN_OFFSET=$n
   sx_tok eof '<eof>' 1
 }
 
@@ -1409,15 +1472,16 @@ sx_parse_statement() {
 }
 
 bl_parse_surface_all() {
-  local src=$1
+  local src=$1 source_name=${2:-${SX_SOURCE_NAME:-'<input>'}} line_base=${3:-1}
+  SX_SOURCE_NAME=$source_name; SX_SOURCE_LINE_BASE=$line_base
   sx_lex "$src" || return
   BL_FORMS=(); SX_GENSYM=0; SX_CLASS_PARENT=nil; SX_FUNCTION_DEPTH=0; SX_LOOP_DEPTH=0
   while ! sx_type_is eof; do sx_parse_statement || return; BL_FORMS+=("$RET"); done
 }
 
 bl_interpret_surface_source() {
-  local src=$1 env=${2:-$BL_GLOBAL_ENV} form
-  bl_parse_surface_all "$src" || return
+  local src=$1 env=${2:-$BL_GLOBAL_ENV} source_name=${3:-${SX_SOURCE_NAME:-'<input>'}} line_base=${4:-1} form
+  bl_parse_surface_all "$src" "$source_name" "$line_base" || return
   RET=nil
   for form in "${BL_FORMS[@]}"; do bl_eval "$form" "$env" || return; [[ -z $BL_FLOW ]] || { echo "BLisp-X: $BL_FLOW outside valid context" >&2; return 1; }; done
 }
