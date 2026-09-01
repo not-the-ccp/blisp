@@ -100,13 +100,10 @@ comp_lambda_parts() {
   COMP_TARGET=$oldtarget
   COMP_CONTINUE_MODE=$__old_cont_mode; COMP_CONTINUE_STEP=$__old_cont_step; COMP_CONTINUE_ENV=$__old_cont_env
 
-  # Emit closure construction at the original call site.
-  comp_emit 'bl_alloc'
-  comp_emit 'local __cl=$RET'
-  comp_emit 'BL_TYPE[$__cl]=compiled'
-  comp_q "$fn"; comp_emit "BL_A[\$__cl]=$COMP_REPLY"
-  comp_emit "BL_B[\$__cl]=\"\$$capture_env\""
-  comp_emit 'RET=$__cl'
+  # Emit closure construction through the same callable initializer used by
+  # the interpreter; compiled lambdas therefore cannot miss Function.prototype.
+  comp_q "$fn"; local __fnq=$COMP_REPLY
+  comp_emit "bl_make_compiled $__fnq \"\$$capture_env\""
 }
 
 comp_expr() {

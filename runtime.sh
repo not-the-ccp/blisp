@@ -17,9 +17,6 @@ BL_BYTES_PROTO=nil
 BL_TCP_PROTO=nil
 BL_FILE_PROTO=nil
 BL_PROCESS_HANDLE_PROTO=nil
-BL_FN_CALL=nil
-BL_FN_APPLY=nil
-BL_FN_BIND=nil
 BL_SEQ=0
 BL_GENSYM_SEQ=0
 BL_GC_LAST_SEQ=0
@@ -67,8 +64,17 @@ bl_make_gensym() {
   BL_C[$RET]=$debug
 }
 bl_cons() { local a=$1 b=$2; bl_alloc; BL_TYPE[$RET]=cons; BL_A[$RET]=$a; BL_B[$RET]=$b; }
-bl_make_builtin() { local name=$1 mode=${2:-plain}; bl_alloc; BL_TYPE[$RET]=builtin; BL_A[$RET]=$name; BL_C[$RET]=$mode; [[ $BL_FUNCTION_PROTO != nil ]] && BL_PROTO[$RET]=$BL_FUNCTION_PROTO; }
-bl_make_closure() { local fn=$1 env=$2 params=$3; bl_alloc; BL_TYPE[$RET]=closure; BL_A[$RET]=$fn; BL_B[$RET]=$env; BL_C[$RET]=$params; [[ $BL_FUNCTION_PROTO != nil ]] && BL_PROTO[$RET]=$BL_FUNCTION_PROTO; }
+# Every native callable kind is allocated through one initializer.  The
+# Function-prototype attachment is therefore an invariant of callable creation,
+# not something individual interpreter/compiler paths have to remember.
+bl_init_callable() {
+  local v=$1 type=$2
+  BL_TYPE[$v]=$type
+  [[ $BL_FUNCTION_PROTO != nil ]] && BL_PROTO[$v]=$BL_FUNCTION_PROTO
+}
+bl_make_builtin() { local name=$1 mode=${2:-plain}; bl_alloc; local v=$RET; bl_init_callable "$v" builtin; BL_A[$v]=$name; BL_C[$v]=$mode; RET=$v; }
+bl_make_closure() { local fn=$1 env=$2 params=$3; bl_alloc; local v=$RET; bl_init_callable "$v" closure; BL_A[$v]=$fn; BL_B[$v]=$env; BL_C[$v]=$params; RET=$v; }
+bl_make_compiled() { local fn=$1 env=$2; bl_alloc; local v=$RET; bl_init_callable "$v" compiled; BL_A[$v]=$fn; BL_B[$v]=$env; RET=$v; }
 bl_make_object() { local proto=${1:-$BL_OBJECT_PROTO}; bl_alloc; BL_TYPE[$RET]=object; BL_PROTO[$RET]=$proto; BL_KEY_COUNT[$RET]=0; }
 bl_make_array() {
   local -a xs=("$@")
@@ -77,7 +83,7 @@ bl_make_array() {
   for ((i=0;i<${#xs[@]};++i)); do bl_prop_set_key "$out" "$i" "${xs[i]}"; done
   RET=$out
 }
-bl_make_bound() { local fn=$1 thisv=$2 args=$3; bl_alloc; BL_TYPE[$RET]=bound; BL_A[$RET]=$fn; BL_B[$RET]=$thisv; BL_C[$RET]=$args; [[ $BL_FUNCTION_PROTO != nil ]] && BL_PROTO[$RET]=$BL_FUNCTION_PROTO; }
+bl_make_bound() { local fn=$1 thisv=$2 args=$3; bl_alloc; local v=$RET; bl_init_callable "$v" bound; BL_A[$v]=$fn; BL_B[$v]=$thisv; BL_C[$v]=$args; RET=$v; }
 
 bl_typeof() {
   case $1 in
@@ -473,7 +479,7 @@ bl_eval() {
           local fnamev=${BL_A[$target]} params=${BL_B[$target]}
           [[ ${BL_TYPE[$fnamev]-} == symbol ]] || { echo 'BLisp: bad function definition' >&2; return 1; }
           bl_rest "$rest"; local body=$RET
-          bl_alloc; local clos=$RET; BL_TYPE[$clos]=closure; BL_A[$clos]=interpreted; BL_B[$clos]=$env; BL_C[$clos]="$params|$body"
+          bl_make_closure interpreted "$env" "$params|$body"; local clos=$RET
           bl_env_define "$env" "${BL_A[$fnamev]}" "$clos"
         else
           [[ ${BL_TYPE[$target]-} == symbol ]] || { echo 'BLisp: define target must be symbol' >&2; return 1; }
@@ -492,7 +498,7 @@ bl_eval() {
       lambda)
         bl_nth "$rest" 0 || return 1; local params=$RET
         bl_rest "$rest"; local body=$RET
-        bl_alloc; local clos=$RET; BL_TYPE[$clos]=closure; BL_A[$clos]=interpreted; BL_B[$clos]=$env; BL_C[$clos]="$params|$body"; RET=$clos; return ;;
+        bl_make_closure interpreted "$env" "$params|$body"; return ;;
       let)
         bl_nth "$rest" 0 || return 1; local binds=$RET
         bl_rest "$rest"; local body=$RET
@@ -627,9 +633,8 @@ bl_prop_get_key() {
   fi
   case ${BL_TYPE[$obj]-} in builtin|closure|compiled|bound)
     case $key in
-      call) RET=$BL_FN_CALL; return;;
-      apply) RET=$BL_FN_APPLY; return;;
-      bind) RET=$BL_FN_BIND; return;;
+      # Constructor prototype objects are materialized lazily, but Function
+      # behavior (`call`/`apply`/`bind`) is ordinary prototype lookup below.
       prototype) [[ -v 'BL_PROP["$obj|prototype"]' ]] || { bl_ensure_prototype "$obj"; return; };;
     esac
   esac
@@ -1910,13 +1915,17 @@ bl_install_builtins() {
   bl_make_object "$BL_OBJECT_PROTO"; BL_STRING_PROTO=$RET
   bl_make_object "$BL_OBJECT_PROTO"; BL_BYTES_PROTO=$RET
 
-  # Existing builtins were made before Function.prototype existed; attach them now.
+  # Callables created during bootstrap predate Function.prototype.  Repair the
+  # invariant over the heap once; all subsequent callable construction goes
+  # through bl_init_callable and cannot omit it.
   local k v
-  for k in "${!BL_ENV_BIND[@]}"; do v=${BL_ENV_BIND[$k]}; [[ ${BL_TYPE[$v]-} == builtin ]] && BL_PROTO[$v]=$BL_FUNCTION_PROTO; done
+  for v in "${!BL_TYPE[@]}"; do
+    case ${BL_TYPE[$v]-} in builtin|closure|compiled|bound) BL_PROTO[$v]=$BL_FUNCTION_PROTO;; esac
+  done
 
-  bl_make_builtin fn_call method; BL_FN_CALL=$RET
-  bl_make_builtin fn_apply method; BL_FN_APPLY=$RET
-  bl_make_builtin fn_bind method; BL_FN_BIND=$RET
+  bl_make_builtin fn_call method; bl_prop_set_key "$BL_FUNCTION_PROTO" call "$RET" >/dev/null
+  bl_make_builtin fn_apply method; bl_prop_set_key "$BL_FUNCTION_PROTO" apply "$RET" >/dev/null
+  bl_make_builtin fn_bind method; bl_prop_set_key "$BL_FUNCTION_PROTO" bind "$RET" >/dev/null
 
   # Object.prototype
   bl_make_builtin has_own_method method; bl_prop_set_key "$BL_OBJECT_PROTO" hasOwnProperty "$RET" >/dev/null
@@ -2018,7 +2027,7 @@ bl_interpret_source() {
 bl_runtime_init() {
   BL_TYPE=(); BL_A=(); BL_B=(); BL_C=(); BL_SEQ=0; BL_GENSYM_SEQ=0
   BL_PROP=(); BL_PROTO=(); BL_KEY_COUNT=(); BL_KEY_AT=(); BL_ARR_LEN=(); BL_BYTES_LEN=(); BL_BYTE_AT=()
-  BL_OBJECT_PROTO=nil; BL_ARRAY_PROTO=nil; BL_FUNCTION_PROTO=nil; BL_STRING_PROTO=nil; BL_BYTES_PROTO=nil; BL_TCP_PROTO=nil; BL_FILE_PROTO=nil; BL_FN_CALL=nil; BL_FN_APPLY=nil; BL_FN_BIND=nil
+  BL_OBJECT_PROTO=nil; BL_ARRAY_PROTO=nil; BL_FUNCTION_PROTO=nil; BL_STRING_PROTO=nil; BL_BYTES_PROTO=nil; BL_TCP_PROTO=nil; BL_FILE_PROTO=nil
   BL_ENV_PARENT=(); BL_ENV_BIND=(); BL_ENV_CONST=(); BL_ENV_SEQ=0
   BL_USER_ARGV=(); BL_FLOW=; BL_FLOW_VALUE=nil; BL_THROWN=0; BL_THROW_VALUE=nil; BL_GC_VMARK=(); BL_GC_EMARK=(); BL_GC_LAST_SEQ=0; BL_GC_RUNNING=0
   bl_process_env_init

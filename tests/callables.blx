@@ -1,0 +1,49 @@
+include "../lib/testing.blx";
+
+let t = testing.suite("callables");
+
+fn inc(x) { return x + 1; }
+
+fn _sharedFunctionPrototype() {
+  let f = fn(x) { return x * 2; };
+  testing.equal(Object.getPrototypeOf(f) is Object.getPrototypeOf(println), true, null);
+  testing.equal(Object.getPrototypeOf(inc) is Object.getPrototypeOf(f), true, null);
+}
+t.test("all native callable kinds share Function prototype", _sharedFunctionPrototype);
+
+fn _realFunctionMethods() {
+  let f = fn(a, b) { return a + b; };
+  testing.equal(f.call(null, 20, 22), 42, null);
+  testing.equal(f.apply(null, [20, 22]), 42, null);
+  let b = f.bind(null, 20);
+  testing.equal(b(22), 42, null);
+  testing.equal(Object.getPrototypeOf(b) is Object.getPrototypeOf(f), true, null);
+}
+t.test("call apply bind come from callable prototype", _realFunctionMethods);
+
+fn _functionPropertiesAndPrototypeTraversal() {
+  let f = fn(x) { return x; };
+  f.label = "identity";
+  testing.equal(f.label, "identity", null);
+
+  let base = Object.getPrototypeOf(f);
+  let custom = Object.create(base);
+  custom.marker = 73;
+  Object.setPrototypeOf(f, custom);
+  testing.equal(f.marker, 73, null);
+  // Function methods remain reachable because the custom prototype delegates
+  // to the ordinary Function prototype.
+  testing.equal(f.call(null, 9), 9, null);
+}
+t.test("functions support ordinary properties and prototype traversal", _functionPropertiesAndPrototypeTraversal);
+
+fn Box(v) { this.value = v; }
+fn _constructorInvariant() {
+  let b = new Box(42);
+  testing.equal(b.value, 42, null);
+  testing.equal(b instanceof Box, true, null);
+  testing.equal(Box.prototype.constructor is Box, true, null);
+}
+t.test("interpreted and compiled functions are constructors consistently", _constructorInvariant);
+
+t.report();

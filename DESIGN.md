@@ -104,6 +104,27 @@ BLisp deliberately does **not** use D-style UFCS fallback where `x.f()` may mean
 method or `f(x)`. In a dynamic prototype language that would make a later property added
 to a prototype silently change dispatch. Free functions compose through `|>` instead.
 
+### Callable values obey one prototype invariant
+
+Every native callable kind—builtin, interpreted closure, compiled closure, and bound
+function—is an ordinary property-bearing value whose default internal prototype is the one
+shared Function prototype. `call`, `apply`, and `bind` are real methods on that prototype,
+not virtual properties special-cased by lookup:
+
+```blx
+let f = fn(x) { return x + 1; };
+f.call(null, 41);       // 42
+f.apply(null, [41]);    // 42
+let g = f.bind(null, 41);
+g();                    // 42
+```
+
+Functions may carry own properties and may participate in normal prototype delegation.
+Function construction is centralized in the runtime so the interpreter and compiler cannot
+silently create different categories of closure. Constructor `.prototype` objects remain
+lazily materialized when constructor semantics first require them; that is separate from the
+callable value's own internal Function prototype.
+
 ## Functions should not have a crippled lambda sublanguage
 
 Python lambdas are intentionally restricted to one expression. BLisp has one closure
