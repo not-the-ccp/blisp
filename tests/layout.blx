@@ -1,0 +1,136 @@
+include "../lib/testing.blx";
+
+let t = testing.suite("layout");
+
+fn _layoutVerticalCalls()
+    fn tri(a, b, c)
+        return a * 100 + b * 10 + c
+
+    let direct = tri
+        2
+        3
+        4
+
+    let nested = tri
+        1
+        tri
+            0
+            2
+            3
+        4
+
+    testing.equal(direct, 234, null)
+    testing.equal(nested, 334, null)
+
+t.test("vertical n-ary and nested calls", _layoutVerticalCalls);
+
+fn _layoutExplicitBoundary()
+    fn makeAdder(a)
+        return b => a + b
+
+    let v = makeAdder(10)
+        7
+    testing.equal(v, 17, null)
+
+t.test("explicit call closes before outer layout call", _layoutExplicitBoundary);
+
+fn _layoutControl(n)
+    if n < 0
+        return :negative
+    else if n == 0
+        return :zero
+    else
+        let total = 0
+        for x of 1..n
+            if x == 2
+                continue
+            total += x
+        return total
+
+fn _layoutControlTest()
+    testing.equal(_layoutControl(-1), :negative, null)
+    testing.equal(_layoutControl(0), :zero, null)
+    testing.equal(_layoutControl(4), 8, null)
+
+t.test("if/else and for layout", _layoutControlTest);
+
+fn _layoutReturnBlock(x)
+    return
+        let doubled = x * 2
+        doubled + 1
+
+fn _layoutReturnTest()
+    testing.equal(_layoutReturnBlock(20), 41, null)
+
+t.test("return owns indented value block", _layoutReturnTest);
+
+proto LayoutAnimal
+    init(name)
+        this.name = name
+
+    describe()
+        return "Animal(" + this.name + ")"
+
+    static kingdom()
+        return "animalia"
+
+proto LayoutDog : LayoutAnimal
+    init(name, breed)
+        super(name)
+        this.breed = breed
+
+    describe()
+        return super.describe() + ":" + this.breed
+
+fn _layoutProtoTest()
+    let d = new LayoutDog("Fifi", "collie")
+    testing.equal(d.describe(), "Animal(Fifi):collie", null)
+    testing.equal(LayoutDog.kingdom(), "animalia", null)
+    testing.equal(d instanceof LayoutAnimal, true, null)
+
+t.test("prototype layout, inheritance and super", _layoutProtoTest);
+
+fn _layoutCondMatch(n)
+    let kind = cond
+        n < 0 => :negative
+        n == 0 => :zero
+        n < 10 =>
+            let tag = :small
+            tag
+        else => :large
+
+    return match kind
+        :negative => "negative"
+        :zero => "zero"
+        :small =>
+            let suffix = "!"
+            "small" + suffix
+        else => "large"
+
+fn _layoutCondMatchTest()
+    testing.equal(_layoutCondMatch(-2), "negative", null)
+    testing.equal(_layoutCondMatch(0), "zero", null)
+    testing.equal(_layoutCondMatch(4), "small!", null)
+    testing.equal(_layoutCondMatch(40), "large", null)
+
+t.test("layout cond and match with block values", _layoutCondMatchTest);
+
+fn _layoutArrowTest()
+    let f = x =>
+        let y = x * 3
+        return y + 1
+    testing.equal(f(7), 22, null)
+
+t.test("block-bodied arrow layout", _layoutArrowTest);
+
+fn _layoutMixedSyntax()
+    let n = (+ 2 3)
+    let text = "ab"
+        |> .upper()
+        |> .repeat(2)
+    testing.equal(n, 5, null)
+    testing.equal(text, "ABAB", null)
+
+t.test("S-expressions and pipeline continuations mix with layout", _layoutMixedSyntax);
+
+t.report();

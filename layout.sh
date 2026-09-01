@@ -29,6 +29,9 @@ sx_layout_alias sx_parse_while sx_parse_while_without_layout
 sx_layout_alias sx_parse_loopish sx_parse_loopish_without_layout
 sx_layout_alias sx_parse_for sx_parse_for_without_layout
 sx_layout_alias sx_parse_when_unless sx_parse_when_unless_without_layout
+sx_layout_alias sx_parse_class sx_parse_class_without_layout
+sx_layout_alias sx_parse_cond_expr sx_parse_cond_expr_without_layout
+sx_layout_alias sx_parse_match_expr sx_parse_match_expr_without_layout
 
 # --- textual layout prepass -------------------------------------------------
 #
@@ -83,7 +86,7 @@ sx_layout_scan_line() {
     fi
     if [[ -n $quote ]]; then
       if (( esc )); then esc=0
-      elif [[ $c == '\\' ]]; then esc=1
+      elif [[ $c == '\' ]]; then esc=1
       elif [[ $c == "$quote" ]]; then quote=; fi
       ((i++)) || true; continue
     fi
@@ -106,14 +109,19 @@ sx_layout_scan_line() {
 }
 
 sx_layout_leading_indent() {
-  local line=$1 i=0 n=${#1} c
+  local line=$1 structural=${2:-1} i=0 n=${#1} c
   SX_LAYOUT_INDENT=0
   while (( i < n )); do
     c=${line:i:1}
     if [[ $c == ' ' ]]; then ((SX_LAYOUT_INDENT++)) || true
     elif [[ $c == $'\t' ]]; then
-      printf 'BLisp layout: tabs are not allowed for structural indentation; use spaces\n' >&2
-      return 1
+      if (( structural )); then
+        printf 'BLisp layout: tabs are not allowed for structural indentation; use spaces\n' >&2
+        return 1
+      fi
+      # Inside explicit delimiters indentation is non-structural.  Do not
+      # invent a tab width because the value is deliberately irrelevant.
+      ((SX_LAYOUT_INDENT++)) || true
     else break
     fi
     ((i++)) || true
@@ -134,7 +142,9 @@ sx_layout_rewrite_source() {
   # Preserve a final unterminated physical line.
   while IFS= read -r line || [[ -n $line ]]; do
     local depth_before=$depth quote_before=$quote block_before=$block
-    sx_layout_leading_indent "$line" || return
+    local indentation_structural=0
+    (( depth_before == 0 )) && [[ -z $quote_before ]] && (( ! block_before )) && indentation_structural=1
+    sx_layout_leading_indent "$line" "$indentation_structural" || return
     local indent=$SX_LAYOUT_INDENT
 
     sx_layout_scan_line "$line" "$depth" "$quote" "$block"
@@ -187,7 +197,35 @@ sx_layout_rewrite_source() {
   SX_LAYOUT_REWRITTEN=$out
 }
 
+# Most existing hybrid source uses explicit delimiters.  Running the Bash
+# character-by-character layout scanner over every such module would nearly
+# double lexing work.  This conservative line-level check only answers "can
+# layout possibly matter?".  A false positive merely takes the slower path; a
+# false negative would be incorrect, so the only source we skip is source in
+# which every indentation increase follows an explicit opener.  Every layout
+# construct needs an indentation increase after a non-opener line.
+sx_layout_maybe_needed() {
+  local src=$1 line trim prefix indent prev_indent=-1 prev_trim= have_prev=0
+  while IFS= read -r line || [[ -n $line ]]; do
+    trim=${line#"${line%%[![:space:]]*}"}
+    [[ -z $trim || $trim == //* ]] && continue
+    prefix=${line%%[![:space:]]*}; indent=${#prefix}
+    if (( have_prev && indent > prev_indent )); then
+      case $prev_trim in
+        *'('|*'['|*'{') ;;
+        *) return 0 ;;
+      esac
+    fi
+    prev_indent=$indent; prev_trim=$trim; have_prev=1
+  done <<< "$src"
+  return 1
+}
+
 sx_lex() {
+  if ! sx_layout_maybe_needed "$1"; then
+    sx_lex_without_layout "$1"
+    return
+  fi
   sx_layout_rewrite_source "$1" || return
   sx_lex_without_layout "$SX_LAYOUT_REWRITTEN" || return
   local i
@@ -437,6 +475,270 @@ sx_parse_statement() {
   # semicolon that the old newline-insensitive parser used as its only clue.
   if sx_is return && (( SX_FUNCTION_DEPTH > 0 )) && [[ ${SX_TOK_VAL[SX_POS+1]-} == '<nl>' || ${SX_TOK_VAL[SX_POS+1]-} == '<dedent>' || ${SX_TOK_TYPE[SX_POS+1]-} == eof ]]; then
     ((SX_POS++)) || true; sx_form return; sx_eat_semi; return
+  fi
+  sx_parse_statement_without_layout
+}
+
+
+# --- richer layout forms ----------------------------------------------------
+#
+# Vertical argument groups are one application, not repeated unary
+# applications.  This distinction matters when explicit syntax is mixed in:
+#
+#   f
+#       a
+#       b        => f(a, b)
+#
+#   f(a)
+#       b        => (f(a))(b)
+#
+# Closing explicit call parentheses therefore really close that application.
+# Indentation outside them operates on the resulting value.
+sx_layout_apply_args() {
+  local callee=$1; shift
+  local -a args=("$@")
+  if sx_unpack_get "$callee"; then
+    sx_form @method-call "$SX_GET_OBJ" "$SX_GET_KEY" "${args[@]}"; return
+  fi
+  if sx_ast_head_is "$callee" @super; then
+    local rr=${BL_B[$callee]}; bl_nth "$rr" 0 || return; local parent=$RET
+    sx_sym this; local tv=$RET
+    sx_form @super-call "$parent" "$tv" "${args[@]}"; return
+  fi
+  if sx_ast_head_is "$callee" @superprop; then
+    local rr=${BL_B[$callee]}; bl_nth "$rr" 0 || return; local parent=$RET
+    bl_nth "$rr" 1 || return; local key=$RET
+    sx_sym this; local tv=$RET
+    sx_form @super-method "$parent" "$tv" "$key" "${args[@]}"; return
+  fi
+  sx_call_ast "$callee" "${args[@]}"
+}
+
+sx_parse_layout_call_group() {
+  local callee=$1
+  local -a args=()
+  sx_accept_nl || { sx_error 'expected layout newline'; return 1; }
+  sx_accept_indent || { sx_error 'expected layout indentation'; return 1; }
+  sx_skip_nl
+  while :; do
+    if sx_is_dedent; then
+      ((${#args[@]})) || { sx_error 'empty layout argument group'; return 1; }
+      sx_accept_dedent
+      sx_layout_apply_args "$callee" "${args[@]}"
+      return
+    fi
+    sx_type_is eof && { sx_error 'unterminated layout argument group'; return 1; }
+    sx_parse_assignment || return
+    args+=("$RET")
+    if sx_is_dedent; then
+      sx_accept_dedent
+      sx_layout_apply_args "$callee" "${args[@]}"
+      return
+    fi
+    if sx_is_nl; then sx_skip_nl; continue; fi
+    sx_error 'layout arguments must be separated by a logical newline'
+    return 1
+  done
+}
+
+# Branch bodies can be expressions, explicit blocks, or indented blocks.
+sx_parse_branch_value() {
+  if sx_is '{' || sx_layout_group_ahead; then sx_parse_block; else sx_parse_assignment; fi
+}
+
+# `cond` and `match` are expression forms.  Their layout variants use one
+# indentation level for branches and retain `=>` because it makes the
+# condition/pattern-to-result boundary explicit without adding braces.
+#
+#   cond
+#       n < 0 => :negative
+#       n == 0 => :zero
+#       else => :positive
+#
+# A result may itself be an indented full block after `=>`.
+sx_parse_cond_expr() {
+  local save=$SX_POS
+  [[ ${SX_TOK_VAL[SX_POS+1]-} == '{' ]] && { sx_parse_cond_expr_without_layout; return; }
+  sx_expect cond || return
+  sx_layout_group_ahead || { SX_POS=$save; sx_parse_cond_expr_without_layout; return; }
+  sx_accept_nl; sx_accept_indent; sx_skip_nl
+  local -a conds=() vals=(); local fallback=nil saw_else=0
+  while ! sx_is_dedent; do
+    if sx_is else || sx_is '_'; then
+      ((SX_POS++)) || true; sx_expect '=>' || return
+      sx_parse_branch_value || return; fallback=$RET; saw_else=1
+      sx_skip_nl
+      sx_is_dedent || { sx_error 'else must be the last cond branch'; return 1; }
+      break
+    fi
+    sx_layout_parse_header_expr || return; conds+=("$RET")
+    sx_expect '=>' || return
+    sx_parse_branch_value || return; vals+=("$RET")
+    sx_skip_nl
+  done
+  sx_accept_dedent || { sx_error 'unterminated layout cond'; return 1; }
+  local out=$fallback i
+  for ((i=${#conds[@]}-1;i>=0;--i)); do sx_form if "${conds[i]}" "${vals[i]}" "$out"; out=$RET; done
+  RET=$out
+}
+
+sx_parse_match_expr() {
+  local save=$SX_POS
+  sx_expect match || return
+  sx_layout_parse_header_expr || return; local subject=$RET
+  if sx_is '{'; then SX_POS=$save; sx_parse_match_expr_without_layout; return; fi
+  sx_layout_group_ahead || { sx_error "match expects '{' or an indented branch group"; return 1; }
+  sx_accept_nl; sx_accept_indent; sx_skip_nl
+  sx_gensym; local tmp=$RET
+  local -a pats=() vals=(); local fallback=nil
+  while ! sx_is_dedent; do
+    if sx_is else || sx_is '_'; then
+      ((SX_POS++)) || true; sx_expect '=>' || return
+      sx_parse_branch_value || return; fallback=$RET
+      sx_skip_nl
+      sx_is_dedent || { sx_error 'else must be the last match branch'; return 1; }
+      break
+    fi
+    sx_layout_parse_header_expr || return; pats+=("$RET")
+    sx_expect '=>' || return
+    sx_parse_branch_value || return; vals+=("$RET")
+    sx_skip_nl
+  done
+  sx_accept_dedent || { sx_error 'unterminated layout match'; return 1; }
+  local out=$fallback i
+  for ((i=${#pats[@]}-1;i>=0;--i)); do
+    sx_form equal? "$tmp" "${pats[i]}"; local c=$RET
+    sx_form if "$c" "${vals[i]}" "$out"; out=$RET
+  done
+  bl_list_from_array "$tmp" "$subject"; local pair=$RET
+  bl_list_from_array "$pair"; local binds=$RET
+  sx_form let "$binds" "$out"
+}
+
+# Convert the parameter scratch state produced by the current surface parser
+# into a lambda, preserving newer call-time-default support when available and
+# remaining compatible with older snapshots used by development tests.
+sx_layout_lower_method_params() {
+  local body=$1 rest=$2; shift 2
+  local -a names=("$@")
+  if declare -F sx_lower_surface_params >/dev/null; then
+    SX_PARAM_NAMES=("${names[@]}")
+    SX_PARAM_REST=$rest
+    SX_PARAM_DEFAULTS=("${SX_LAYOUT_SAVED_DEFAULTS[@]}")
+    sx_lower_surface_params "$body" || return
+    SX_LAYOUT_PARAMS=$SX_LAMBDA_PARAMS
+    SX_LAYOUT_BODY=$SX_LAMBDA_BODY
+  else
+    local SX_PARAM_REST=$rest
+    sx_params_spec "${names[@]}" || return
+    SX_LAYOUT_PARAMS=$RET
+    SX_LAYOUT_BODY=$body
+  fi
+}
+declare -ag SX_LAYOUT_SAVED_DEFAULTS=()
+SX_LAYOUT_PARAMS=nil
+SX_LAYOUT_BODY=nil
+
+# `proto` is the preferred spelling, but `class` gets the same layout support
+# for compatibility.  Parameter parentheses remain explicit signature syntax;
+# indentation replaces the *body* braces, not every punctuation mark in the
+# grammar.
+sx_parse_class() {
+  local save=$SX_POS kind=${SX_TOK_VAL[SX_POS]}
+  [[ $kind == class || $kind == proto ]] || { sx_error 'expected class/proto'; return 1; }
+  ((SX_POS++)) || true
+  sx_take_type id || return; local cname=$SX_TOKEN
+  bl_make_symbol "$cname"; local csym=$RET parent=nil
+  if sx_accept extends || { [[ $kind == proto ]] && sx_accept ':'; }; then
+    sx_take_type id || return; bl_make_symbol "$SX_TOKEN"; parent=$RET
+  fi
+  if sx_is '{'; then SX_POS=$save; sx_parse_class_without_layout; return; fi
+  sx_layout_group_ahead || { sx_error "proto/class expects '{' or an indented method group"; return 1; }
+  sx_accept_nl; sx_accept_indent; sx_skip_nl
+
+  local old_parent=$SX_CLASS_PARENT; SX_CLASS_PARENT=$parent
+  local ctor_params=nil ctor_body=nil ctor_found=0
+  local -a meth_names=() meth_params=() meth_bodies=() meth_static=()
+  while ! sx_is_dedent; do
+    local isstatic=0; sx_accept static && isstatic=1
+    sx_take_type id || { SX_CLASS_PARENT=$old_parent; return; }; local mname=$SX_TOKEN
+    sx_parse_param_names || { SX_CLASS_PARENT=$old_parent; return; }
+    local -a saved_names=("${SX_PARAM_NAMES[@]}")
+    local saved_rest=$SX_PARAM_REST
+    SX_LAYOUT_SAVED_DEFAULTS=()
+    if declare -p SX_PARAM_DEFAULTS >/dev/null 2>&1; then SX_LAYOUT_SAVED_DEFAULTS=("${SX_PARAM_DEFAULTS[@]}"); fi
+
+    local oldfd=$SX_FUNCTION_DEPTH oldld=$SX_LOOP_DEPTH
+    ((SX_FUNCTION_DEPTH++)) || true; SX_LOOP_DEPTH=0
+    sx_parse_block || { SX_FUNCTION_DEPTH=$oldfd; SX_LOOP_DEPTH=$oldld; SX_CLASS_PARENT=$old_parent; return; }
+    local body=$RET; SX_FUNCTION_DEPTH=$oldfd; SX_LOOP_DEPTH=$oldld
+    sx_layout_lower_method_params "$body" "$saved_rest" "${saved_names[@]}" || { SX_CLASS_PARENT=$old_parent; return; }
+    local params=$SX_LAYOUT_PARAMS; body=$SX_LAYOUT_BODY
+
+    if [[ $mname == constructor || $mname == init ]] && (( ! isstatic )); then
+      ctor_params=$params; ctor_body=$body; ctor_found=1
+    else
+      meth_names+=("$mname"); meth_params+=("$params"); meth_bodies+=("$body"); meth_static+=("$isstatic")
+    fi
+    sx_skip_nl
+  done
+  sx_accept_dedent || { SX_CLASS_PARENT=$old_parent; sx_error 'unterminated proto/class layout body'; return 1; }
+  SX_CLASS_PARENT=$old_parent
+
+  local -a forms=()
+  if (( ! ctor_found )); then
+    sx_params; ctor_params=$RET
+    if [[ $parent != nil ]]; then
+      sx_sym this; local tv=$RET; sx_form @super-call "$parent" "$tv"; ctor_body=$RET
+    else ctor_body=nil; fi
+  fi
+  sx_form lambda "$ctor_params" "$ctor_body"; local ctor=$RET
+  sx_form define "$csym" "$ctor"; forms+=("$RET")
+  sx_form ensure-prototype "$csym"; local cproto=$RET; forms+=("$cproto")
+  if [[ $parent != nil ]]; then
+    sx_form ensure-prototype "$parent"; local pproto=$RET
+    sx_form set-proto! "$cproto" "$pproto"; forms+=("$RET")
+    sx_form set-proto! "$csym" "$parent"; forms+=("$RET")
+  fi
+  local i
+  for ((i=0;i<${#meth_names[@]};++i)); do
+    sx_form lambda "${meth_params[i]}" "${meth_bodies[i]}"; local fn=$RET
+    sx_str "${meth_names[i]}"; local k=$RET
+    if (( meth_static[i] )); then sx_form set-prop! "$csym" "$k" "$fn"
+    else sx_form set-prop! "$cproto" "$k" "$fn"; fi
+    forms+=("$RET")
+  done
+  forms+=("$csym")
+  sx_form begin "${forms[@]}"
+}
+
+
+# `return` participates in layout as an expression introducer.  A plain
+# newline still means bare return, while an indented group is a value-producing
+# scope.  This keeps long return expressions forward-growing:
+#
+#   return
+#       render
+#           value
+#           options
+sx_parse_statement() {
+  if sx_layout_group_ahead; then sx_parse_block; return; fi
+  sx_skip_nl
+  sx_type_is eof && { RET=nil; return; }
+  sx_is_dedent && { sx_error 'unexpected dedent'; return 1; }
+
+  if sx_is return && (( SX_FUNCTION_DEPTH > 0 )); then
+    if [[ ${SX_TOK_VAL[SX_POS+1]-} == '<nl>' && ${SX_TOK_VAL[SX_POS+2]-} == '<indent>' ]]; then
+      ((SX_POS++)) || true
+      sx_parse_block || return
+      local value=$RET
+      sx_form return "$value"
+      sx_eat_semi
+      return
+    fi
+    if [[ ${SX_TOK_VAL[SX_POS+1]-} == '<nl>' || ${SX_TOK_VAL[SX_POS+1]-} == '<dedent>' || ${SX_TOK_TYPE[SX_POS+1]-} == eof ]]; then
+      ((SX_POS++)) || true; sx_form return; sx_eat_semi; return
+    fi
   fi
   sx_parse_statement_without_layout
 }
