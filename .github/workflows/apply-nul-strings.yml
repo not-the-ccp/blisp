@@ -21,7 +21,7 @@ jobs:
         run: |
           set -euo pipefail
           base64 -d .sync/nul-transform.xz.b64 | xz -d > /tmp/apply-nul-strings.py
-          echo '8d2b25397e1ad3eb9fc6834a88c73e93cbbcd56cc95f3ad9671e839404cd6671  /tmp/apply-nul-strings.py' | sha256sum -c -
+          echo '1cbbfe2834275764fbfa8c9bbaf184238d659a3cdb622e8eef47a88143f6f372  /tmp/apply-nul-strings.py' | sha256sum -c -
           python3 /tmp/apply-nul-strings.py
           bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
           source tests/differential-lib.sh
