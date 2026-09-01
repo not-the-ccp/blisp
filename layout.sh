@@ -235,12 +235,15 @@ sx_lex() {
     sx_lex_without_layout "$1"
     return
   fi
-  local original_source=$1
+  local original_source=$1 st
   sx_layout_rewrite_source "$1" || return
-  sx_lex_without_layout "$SX_LAYOUT_REWRITTEN" || return
   SX_LAYOUT_DIAG_ACTIVE=1
   SX_LAYOUT_LEX_SOURCE=$SX_LAYOUT_REWRITTEN
   SX_SOURCE_TEXT=$original_source
+  SX_LEX_KEEP_SOURCE_CONTEXT=1
+  sx_lex_without_layout "$SX_LAYOUT_REWRITTEN"; st=$?
+  SX_LEX_KEEP_SOURCE_CONTEXT=0
+  (( st == 0 )) || return "$st"
   local i
   for ((i=0;i<${#SX_TOK_VAL[@]};++i)); do
     case ${SX_TOK_VAL[i]} in

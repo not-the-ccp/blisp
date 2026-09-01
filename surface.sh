@@ -18,6 +18,7 @@ SX_TOKEN_OFFSET=0
 SX_LAYOUT_DIAG_ACTIVE=0
 SX_LAYOUT_LEX_SOURCE=
 SX_SOURCE_LINE_BASE=1
+SX_LEX_KEEP_SOURCE_CONTEXT=0
 
 # Operator spellings are aliases for one canonical semantic operator.  A word
 # spelling and a symbolic spelling must never differ in precedence,
@@ -87,21 +88,28 @@ sx_operator_canon_is_infix() {
   esac
 }
 
-sx_error() {
-  local near='<eof>'
-  (( SX_POS < ${#SX_TOK_VAL[@]} )) && near=${SX_TOK_VAL[SX_POS]}
-  local off=${SX_TOK_OFF[SX_POS]-${#SX_SOURCE_TEXT}} line col excerpt
+sx_diagnostic_at() {
+  local off=$1 kind=$2 message=$3 suffix=${4:-} line col excerpt
   sx_error_location "$off"
   line=$SX_ERROR_LINE; col=$SX_ERROR_COL
   local display_line=$((line + SX_SOURCE_LINE_BASE - 1))
   sx_source_line "$SX_SOURCE_TEXT" "$line"; excerpt=$SX_ERROR_EXCERPT
-  printf '%s:%d:%d: BLisp hybrid parse error: %s (near %q)\n' "$SX_SOURCE_NAME" "$display_line" "$col" "$*" "$near" >&2
+  printf '%s:%d:%d: BLisp hybrid %s: %s%s\n' "$SX_SOURCE_NAME" "$display_line" "$col" "$kind" "$message" "$suffix" >&2
   [[ -n $excerpt ]] && {
     printf '  %s\n' "$excerpt" >&2
     printf '  %*s^\n' "$((col-1))" '' >&2
   }
   return 1
 }
+
+sx_error() {
+  local near='<eof>'
+  (( SX_POS < ${#SX_TOK_VAL[@]} )) && near=${SX_TOK_VAL[SX_POS]}
+  local off=${SX_TOK_OFF[SX_POS]-${#SX_SOURCE_TEXT}}
+  sx_diagnostic_at "$off" 'parse error' "$*" " (near $(printf '%q' "$near"))"
+}
+
+sx_lex_error() { sx_diagnostic_at "${2:-$SX_TOKEN_OFFSET}" 'lexer error' "$1"; }
 
 SX_ERROR_LINE=1
 SX_ERROR_COL=1
@@ -154,13 +162,16 @@ sx_tok() {
 
 sx_lex() {
   local src=$1 i=0 n=${#1} c d q buf esc op gap=1
-  SX_SOURCE_TEXT=$src; SX_LAYOUT_DIAG_ACTIVE=0; SX_LAYOUT_LEX_SOURCE=
+  if (( ! SX_LEX_KEEP_SOURCE_CONTEXT )); then
+    SX_SOURCE_TEXT=$src; SX_LAYOUT_DIAG_ACTIVE=0; SX_LAYOUT_LEX_SOURCE=
+  fi
   SX_TOK_TYPE=(); SX_TOK_VAL=(); SX_TOK_GAP=(); SX_TOK_OFF=(); SX_POS=0
   while (( i < n )); do
     c=${src:i:1}
     case $c in
       ' '|$'\t'|$'\r'|$'\n') gap=1; ((i++)) || true; continue ;;
     esac
+    SX_TOKEN_OFFSET=$i
     if [[ $c == / && ${src:i+1:1} == / ]]; then
       gap=1; ((i+=2)) || true
       while ((i<n)) && [[ ${src:i:1} != $'\n' ]]; do ((i++)) || true; done
@@ -169,35 +180,34 @@ sx_lex() {
     if [[ $c == / && ${src:i+1:1} == '*' ]]; then
       gap=1; ((i+=2)) || true
       while ((i+1<n)) && ! [[ ${src:i:1} == '*' && ${src:i+1:1} == / ]]; do ((i++)) || true; done
-      ((i+1<n)) || { echo 'BLisp hybrid: unterminated block comment' >&2; return 1; }
+      ((i+1<n)) || { sx_lex_error 'unterminated block comment'; return 1; }
       ((i+=2)) || true; continue
     fi
-    SX_TOKEN_OFFSET=$i
     if [[ $c == b && ( ${src:i+1:1} == '"' || ${src:i+1:1} == "'" ) ]]; then
       q=${src:i+1:1}; ((i+=2)) || true; buf=; local hx ord h1 h2
       while ((i<n)); do
         c=${src:i:1}; ((i++)) || true
         [[ $c == "$q" ]] && break
         if [[ $c == '\' ]]; then
-          ((i<n)) || { echo 'BLisp hybrid: unterminated byte escape' >&2; return 1; }
+          ((i<n)) || { sx_lex_error 'unterminated byte escape'; return 1; }
           esc=${src:i:1}; ((i++)) || true
           case $esc in
             n) buf+=0a;; t) buf+=09;; r) buf+=0d;; 0) buf+=00;;
             x)
-              ((i+1<n)) || { echo 'BLisp hybrid: short \\x escape' >&2; return 1; }
-              h1=${src:i:1}; h2=${src:i+1:1}; [[ $h1$h2 =~ ^[0-9A-Fa-f]{2}$ ]] || { echo 'BLisp hybrid: invalid \\x escape' >&2; return 1; }
+              ((i+1<n)) || { sx_lex_error 'short \\x escape'; return 1; }
+              h1=${src:i:1}; h2=${src:i+1:1}; [[ $h1$h2 =~ ^[0-9A-Fa-f]{2}$ ]] || { sx_lex_error 'invalid \\x escape'; return 1; }
               buf+="$h1$h2"; ((i+=2)) || true ;;
             '\') buf+=5c;; '"') buf+=22;; "'") buf+=27;;
-            *) printf 'BLisp hybrid: unsupported byte escape \\%s\n' "$esc" >&2; return 1;;
+            *) sx_lex_error "unsupported byte escape \\$esc"; return 1;;
           esac
         else
           [[ $c == [[:ascii:]] ]] 2>/dev/null || true
           LC_ALL=C printf -v ord '%d' "'$c"
-          ((ord>=0 && ord<=127)) || { echo 'BLisp hybrid: non-ASCII byte literal text must use \\xHH' >&2; return 1; }
+          ((ord>=0 && ord<=127)) || { sx_lex_error 'non-ASCII byte literal text must use \\xHH'; return 1; }
           printf -v hx '%02x' "$ord"; buf+=$hx
         fi
       done
-      [[ $c == "$q" ]] || { echo 'BLisp hybrid: unterminated byte literal' >&2; return 1; }
+      [[ $c == "$q" ]] || { sx_lex_error 'unterminated byte literal'; return 1; }
       sx_tok bytes "$buf" "$gap"; gap=0; continue
     fi
     if [[ $c =~ [A-Za-z_$] ]]; then
@@ -231,11 +241,11 @@ sx_lex() {
         c=${src:i:1}; ((i++)) || true
         [[ $c == "$q" ]] && break
         if [[ $c == '\' ]]; then
-          ((i<n)) || { echo 'BLisp hybrid: unterminated string escape' >&2; return 1; }
+          ((i<n)) || { sx_lex_error 'unterminated string escape'; return 1; }
           esc=${src:i:1}; ((i++)) || true
           case $esc in
             n) buf+=$'\n';; t) buf+=$'\t';; r) buf+=$'\r';;
-            0) echo 'BLisp hybrid: Bash strings cannot contain NUL bytes' >&2; return 1;;
+            0) sx_lex_error 'this reference implementation cannot store NUL in strings; use bytes'; return 1;;
             '\') buf+='\';; '"') buf+='"';; "'") buf+="'";;
             *) buf+="$esc";;
           esac
@@ -243,7 +253,7 @@ sx_lex() {
           buf+="$c"
         fi
       done
-      [[ $c == "$q" ]] || { echo 'BLisp hybrid: unterminated string' >&2; return 1; }
+      [[ $c == "$q" ]] || { sx_lex_error 'unterminated string'; return 1; }
       sx_tok str "$buf" "$gap"; gap=0; continue
     fi
     op=
@@ -255,7 +265,7 @@ sx_lex() {
     case $c in
       '('|')'|'{'|'}'|'['|']'|';'|','|'.'|'?'|':'|'+'|'-'|'*'|'/'|'%'|'!'|'<'|'>'|'='|'|'|'&'|'^'|'@'|'`'|'~')
         sx_tok op "$c" "$gap"; gap=0; ((i++)) || true ;;
-      *) printf 'BLisp hybrid lexer: unexpected character %q\n' "$c" >&2; return 1 ;;
+      *) sx_lex_error "unexpected character $(printf '%q' "$c")"; return 1 ;;
     esac
   done
   SX_TOKEN_OFFSET=$n

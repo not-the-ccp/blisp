@@ -57,4 +57,29 @@ fi
 grep -F "$tmp/layout.blx:5:" "$tmp/err" >/dev/null
 grep -F 'let nope = (x + )' "$tmp/err" >/dev/null
 
+cat > "$tmp/lex.blx" <<'EOF'
+let x = "unterminated
+EOF
+if ./blisp check "$tmp/lex.blx" >"$tmp/out" 2>"$tmp/err"; then
+  echo 'diagnostics: expected lexer failure' >&2; exit 1
+fi
+grep -F "$tmp/lex.blx:1:" "$tmp/err" >/dev/null
+grep -F 'lexer error: unterminated string' "$tmp/err" >/dev/null
+grep -F 'let x = "unterminated' "$tmp/err" >/dev/null
+
+cat > "$tmp/noexec.blx" <<'EOF'
+fn valid(x) { return x + 1; }
+error("check must not execute this");
+EOF
+[[ $(./blisp check "$tmp/noexec.blx") == ok ]]
+
+cat > "$tmp/layout-lex.blx" <<'EOF'
+fn f()
+    println("unterminated)
+EOF
+if ./blisp check "$tmp/layout-lex.blx" >"$tmp/out" 2>"$tmp/err"; then
+  echo 'diagnostics: expected layout lexer failure' >&2; exit 1
+fi
+grep -F "$tmp/layout-lex.blx:2:" "$tmp/err" >/dev/null
+
 echo 'diagnostics: ok'

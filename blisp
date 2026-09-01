@@ -11,6 +11,7 @@ usage() {
   cat <<'TXT'
 usage:
   blisp run FILE [args...]         # .bl = classic Lisp syntax, .blx/.blh = hybrid syntax
+  blisp check FILE                       # parse source/include graph without executing it
   blisp eval EXPR
   blisp evalx EXPR                 # hybrid syntax
   blisp compile FILE [-o OUTPUT]  # auto-detects .blx/.bx
@@ -198,6 +199,22 @@ cmd_run() {
   fi
 }
 
+cmd_check() {
+  (($# == 1)) || { usage >&2; return 2; }
+  local file=$1 src
+  [[ -f $file ]] || { echo "blisp: no such file: $file" >&2; return 2; }
+  bl_runtime_init
+  if is_surface_file "$file"; then
+    BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_SOURCE_CHUNK_LINES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=()
+    bl_collect_hybrid_file "$file" || return
+    bl_parse_surface_chunks || return
+  else
+    src=$(cat -- "$file") || return
+    bl_parse_all "$src" || return
+  fi
+  printf 'ok\n'
+}
+
 cmd_eval() {
   (($# == 1)) || { usage >&2; return 2; }
   bl_runtime_init
@@ -271,6 +288,7 @@ main() {
   local cmd=$1; shift
   case $cmd in
     run) cmd_run "$@" ;;
+    check) cmd_check "$@" ;;
     eval) cmd_eval "$@" ;;
     evalx) cmd_evalx "$@" ;;
     compile) cmd_compile "$@" ;;
