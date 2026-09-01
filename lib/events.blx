@@ -1,0 +1,12 @@
+include "prelude.blx";
+
+proto Signal {
+  constructor(){this._next=1;this._handlers=new HashMap();}
+  on(fnValue){let id=this._next++;this._handlers.set(id,fnValue);return id;}
+  once(fnValue){let self=this;let id=null;id=this.on(fn(...argsList){self.off(id);return fnValue(...toArray(argsList));});return id;}
+  off(id){return this._handlers.delete(id);}
+  clear(){this._handlers.clear();return this;}
+  emit(...argsList){let argsArray=toArray(argsList);let results=[];for(let pair of this._handlers.entries()){if(this._handlers.has(pair[0]))results.push(pair[1](...argsArray));}return results;}
+  __len__(){return len(this._handlers);}
+}
+const events={Signal, signal:fn(){return new Signal();}};

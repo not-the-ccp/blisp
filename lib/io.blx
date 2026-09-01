@@ -1,0 +1,85 @@
+include "prelude.blx";
+
+// Small protocol-oriented I/O helpers. A reader only needs read(n) -> bytes;
+// a writer only needs write(string|bytes). Higher-level policy stays here.
+
+proto BytesReader {
+  constructor(data) { this.data = bytes(data); this.pos = 0; this.closed = false; }
+  _check() { if (this.closed) throw({kind: :io, message: "reader is closed"}); }
+  read(n) {
+    this._check(); n = int(n);
+    if (n < 0) throw({kind: :value, message: "read size must be nonnegative"});
+    let end = this.pos + n; if (end > this.data.length) end = this.data.length;
+    let out = this.data.slice(this.pos, end); this.pos = end; return out;
+  }
+  readAll() { this._check(); let out=this.data.slice(this.pos); this.pos=this.data.length; return out; }
+  close() { this.closed = true; return null; }
+}
+
+proto BytesWriter {
+  constructor() { this.data = bytes(); this.closed = false; }
+  _check() { if (this.closed) throw({kind: :io, message: "writer is closed"}); }
+  write(value) {
+    this._check(); let b = bytes(value);
+    for (let x of b) this.data.push(x);
+    return b.length;
+  }
+  finish() { this._check(); return bytes(this.data); }
+  close() { this.closed = true; return null; }
+}
+
+proto TextWriter {
+  constructor() { this.parts = []; this.closed = false; }
+  write(value) {
+    if (this.closed) throw({kind: :io, message: "writer is closed"});
+    let s = type(value) == "string" ? value : bytes(value).decode();
+    this.parts.push(s); return s.length;
+  }
+  finish() { if (this.closed) throw({kind: :io, message: "writer is closed"}); return this.parts.join(""); }
+  close() { this.closed = true; return null; }
+}
+
+proto TeeWriter {
+  constructor(...writers) { this.writers = toArray(writers); }
+  write(value) { let n = null; for (let w of this.writers) { let x=w.write(value); if (n==null) n=x; } return n==null?0:n; }
+  close() { for (let w of this.writers) if ("close" in w) w.close(); return null; }
+}
+
+proto _LineIter {
+  constructor(reader) { this.reader = reader; }
+  __iter__() { return this; }
+  next() { let line=this.reader.readLine(); return line==null?{done:true,value:null}:{done:false,value:line}; }
+}
+proto _LineSeq {
+  constructor(reader) { this.reader=reader; }
+  __iter__() { return new _LineIter(this.reader); }
+}
+
+fn _ioCopy(reader, writer, chunkSize) {
+  let size = chunkSize == null ? 65536 : int(chunkSize);
+  if (size <= 0) throw({kind: :value, message: "chunk size must be positive"});
+  let total = 0;
+  loop {
+    let chunk = reader.read(size);
+    if (chunk.length == 0) break;
+    writer.write(chunk); total += chunk.length;
+  }
+  return total;
+}
+fn _ioReadAll(reader, chunkSize) { let out=new BytesWriter(); _ioCopy(reader,out,chunkSize); return out.finish(); }
+fn _ioWriteAll(writer, chunks) { let total=0; for(let chunk of chunks) total += writer.write(chunk); return total; }
+fn _ioWith(resource, body) {
+  let r=attempt(()=>body(resource));
+  let c=attempt(()=>resource.close());
+  if(!r.ok) throw(r.error); if(!c.ok) throw(c.error); return r.value;
+}
+
+const ioLib = {
+  BytesReader, BytesWriter, TextWriter, TeeWriter,
+  copy: fn(reader, writer, ...rest) { let xs=toArray(rest); return _ioCopy(reader,writer,xs.length?xs[0]:null); },
+  readAll: fn(reader, ...rest) { let xs=toArray(rest); return _ioReadAll(reader,xs.length?xs[0]:null); },
+  writeAll: _ioWriteAll,
+  lines: fn(reader) { return new _LineSeq(reader); },
+  withResource: _ioWith,
+  open: fn(pathValue, mode, body) { return _ioWith(fs.open(pathValue,mode),body); }
+};

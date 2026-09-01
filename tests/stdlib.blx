@@ -1,0 +1,82 @@
+include "../lib/std.blx";
+
+let t = testing.suite("stdlib");
+
+t.test("deque", fn() {
+  let d = new Deque([1,2,3]); d.pushFront(0); d.pushBack(4);
+  testing.equal(toArray(d), [0,1,2,3,4], null);
+  testing.equal(d.popFront(), 0, null); testing.equal(d.popBack(), 4, null);
+});
+
+t.test("heap", fn() {
+  let h = new Heap([5,1,4,2,3], null); let out=[];
+  while (len(h)>0) out.push(h.pop()); testing.equal(out,[1,2,3,4,5],null);
+});
+
+t.test("counter", fn() { let c=new Counter("abacaba"); testing.equal(c.get("a"),4,null); testing.equal(c.get("z"),0,null); });
+
+t.test("lazy seq", fn() {
+  let out=seq.collect(seq.take(seq.map(seq.count(1,1), x=>x*x),5));
+  testing.equal(out,[1,4,9,16,25],null);
+  testing.equal(seq.collect(seq.zip([1,2,3],["a","b"])), [[1,"a"],[2,"b"]], null);
+});
+
+t.test("unicode helpers", fn() {
+  testing.equal(text.codePoint("é"),233,null); testing.equal(text.codePoint("🙂"),128578,null);
+  testing.equal(text.fromCodePoint(128578),"🙂",null);
+});
+
+t.test("path", fn() { testing.equal(path.normalize("/a/./b/../c"),"/a/c",null); testing.equal(path.join("/a","b","..","c.txt"),"/a/c.txt",null); });
+
+t.test("math/statistics", fn() {
+  testing.equal(math.gcd(84,30),6,null); testing.equal(math.factorial(6),720,null);
+  testing.equal(stats.median([9,1,5,3]),4,null); testing.equal(stats.mean([1,2,3,4]),2.5,null);
+});
+
+t.test("json unicode", fn() {
+  let d=json.parse("{\"e\":\"\\u00e9\",\"face\":\"\\ud83d\\ude42\",\"n\":2.5}");
+  testing.equal(d.e,"é",null); testing.equal(d.face,"🙂",null);
+  let rt=json.parse(json.stringify(d)); testing.equal([rt.e,rt.face,rt.n],[d.e,d.face,d.n],null);
+});
+
+t.test("csv", fn() { let rows=csv.parse("a,\"b,c\"\n1,2"); testing.equal(rows,[["a","b,c"],["1","2"]],null); testing.equal(csv.parse(csv.stringify(rows)),rows,null); });
+
+t.test("uri", fn() { let s="hello é /"; testing.equal(uri.decodeComponent(uri.encodeComponent(s)),s,null); });
+
+t.test("base64/hex", fn() {
+  let raw=b"hello\x00\xff"; testing.equal(base64.decode(base64.encode(raw)),raw,null);
+  testing.equal(encoding.hex.decode(encoding.hex.encode(raw)),raw,null);
+});
+
+t.test("binary", fn() {
+  let w=new BinaryWriter(); w.u16be(0x1234).u16le(0x5678).varuint(300).utf8("ok");
+  let r=new BinaryReader(w.finish()); testing.equal([r.u16be(),r.u16le(),r.varuint(),r.utf8(2)],[4660,22136,300,"ok"],null);
+});
+
+t.test("functional", fn() { let f=functional.pipe(x=>x+1,x=>x*3); testing.equal(f(4),15,null); let once=functional.once(()=>42); testing.equal([once(),once()],[42,42],null); });
+
+t.test("bisect", fn() { let xs=[1,3,5,7]; testing.equal(search.bisectLeft(xs,4),2,null); search.insortRight(xs,5); testing.equal(xs,[1,3,5,5,7],null); });
+
+t.test("ini", fn() { let d=ini.parse("root=yes\n[db]\nhost=localhost\n"); testing.equal(d.root,"yes",null); testing.equal(d.db.host,"localhost",null); });
+
+t.test("regex", fn() { let m=regex.match("([a-z]+)-([0-9]+)","abc-123"); testing.equal(m.groups,["abc","123"],null); testing.equal(regex.test("z+","abc"),false,null); });
+
+t.test("uuid", fn() { let u=uuid.v4(); testing.equal(regex.test("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",u),true,null); });
+
+t.test("random range", fn() { for(let i=0;i<32;i++){let x=random.int(10,20); if(x<10 or x>=20) testing.fail("random.int out of range");} });
+
+t.test("cli", fn() {
+  let spec={verbose:{short:"v",type::bool,default:false},count:{short:"n",type::int,default:0}};
+  let p=cli.parse(["-v","--count=3","file"],spec); testing.equal(p.options.verbose,true,null); testing.equal(p.options.count,3,null); testing.equal(p.positionals,["file"],null);
+});
+
+t.test("temp/files/glob/logging", fn() {
+  let d=temp.dir("blisp-test-");
+  let logPath=path.join(d,"app.log"); let f=fs.open(logPath,"w"); let logger=logging.logger("test",:info,f); logger.info("hello",{x:1}); f.close();
+  let a=path.join(d,"a.txt"); fs.writeText(a,"abc"); fs.mkdir(path.join(d,"sub"),false); let b=path.join(d,"sub","b.txt"); fs.writeText(b,"xyz");
+  testing.equal(glob.find(d,"*.txt").map(path.base).sorted(),["a.txt","b.txt"],null);
+  testing.equal(fs.readText(logPath).contains("hello"),true,null);
+  fs.remove(d,true);
+});
+
+t.report();

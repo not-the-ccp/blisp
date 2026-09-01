@@ -1,0 +1,108 @@
+; BLisp standard library, written in BLisp itself.
+
+(define (identity x) x)
+(define (inc x) (+ x 1))
+(define (dec x) (- x 1))
+
+(define (caar x) (car (car x)))
+(define (cadr x) (car (cdr x)))
+(define (cdar x) (cdr (car x)))
+(define (cddr x) (cdr (cdr x)))
+(define (caddr x) (car (cdr (cdr x))))
+
+(define (length xs)
+  (if (null? xs) 0 (+ 1 (length (cdr xs)))))
+
+(define (append a b)
+  (if (null? a) b (cons (car a) (append (cdr a) b))))
+
+(define (reverse-loop xs out)
+  (if (null? xs) out (reverse-loop (cdr xs) (cons (car xs) out))))
+(define (reverse xs) (reverse-loop xs nil))
+
+(define (map f xs)
+  (if (null? xs)
+      nil
+      (cons (f (car xs)) (map f (cdr xs)))))
+
+(define (filter pred xs)
+  (if (null? xs)
+      nil
+      (if (pred (car xs))
+          (cons (car xs) (filter pred (cdr xs)))
+          (filter pred (cdr xs)))))
+
+(define (foldl f acc xs)
+  (if (null? xs)
+      acc
+      (foldl f (f acc (car xs)) (cdr xs))))
+
+(define (foldr f z xs)
+  (if (null? xs) z (f (car xs) (foldr f z (cdr xs)))))
+
+(define (sum xs) (foldl + 0 xs))
+(define (product xs) (foldl * 1 xs))
+
+(define (range-loop lo hi out)
+  (if (>= lo hi)
+      (reverse out)
+      (range-loop (+ lo 1) hi (cons lo out))))
+(define (range lo hi) (range-loop lo hi nil))
+
+(define (list-ref xs n)
+  (if (= n 0) (car xs) (list-ref (cdr xs) (- n 1))))
+
+(define (take xs n)
+  (if (or (= n 0) (null? xs))
+      nil
+      (cons (car xs) (take (cdr xs) (- n 1)))))
+
+(define (drop xs n)
+  (if (or (= n 0) (null? xs))
+      xs
+      (drop (cdr xs) (- n 1))))
+
+(define (member? x xs)
+  (if (null? xs)
+      false
+      (or (equal? x (car xs)) (member? x (cdr xs)))))
+
+(define (any? pred xs)
+  (if (null? xs) false (or (pred (car xs)) (any? pred (cdr xs)))))
+(define (all? pred xs)
+  (if (null? xs) true (and (pred (car xs)) (all? pred (cdr xs)))))
+
+(define (list-zip a b)
+  (if (or (null? a) (null? b))
+      nil
+      (cons (list (car a) (car b)) (list-zip (cdr a) (cdr b)))))
+
+(define (assoc key pairs)
+  (if (null? pairs)
+      false
+      (if (equal? key (caar pairs))
+          (car pairs)
+          (assoc key (cdr pairs)))))
+
+(define (max2 a b) (if (> a b) a b))
+(define (min2 a b) (if (< a b) a b))
+
+(define (gcd a b)
+  (if (= b 0) a (gcd b (% a b))))
+
+(define (ipow x n)
+  (if (= n 0)
+      1
+      (if (= (% n 2) 0)
+          (let ((h (ipow x (/ n 2)))) (* h h))
+          (* x (ipow x (- n 1))))))
+
+(define (qsort xs)
+  (if (null? xs)
+      nil
+      (let ((pivot (car xs))
+            (tail (cdr xs)))
+        (append
+          (qsort (filter (lambda (x) (< x pivot)) tail))
+          (cons pivot
+                (qsort (filter (lambda (x) (>= x pivot)) tail)))))))

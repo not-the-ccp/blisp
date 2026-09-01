@@ -1,0 +1,56 @@
+// The point of this file is to mix the two syntactic families rather than
+// staying in either a Lisp mode or a C/JS mode.
+
+proto Counter {
+  init(start) { this.n = start; }
+  next() { this.n++; return this.n; }
+}
+
+proto StepCounter : Counter {
+  init(start, step) {
+    super(start);
+    this.step = step;
+  }
+  next() {
+    this.n += this.step;
+    return this.n;
+  }
+}
+
+fn sum(head, ...tail) {
+  // `tail` is a proper Lisp list.  The body freely uses an S-expression.
+  return (+ head (foldl (lambda (a b) (+ a b)) 0 tail));
+}
+
+const xs = 1..8;
+const squares = xs.map(x => (* x x));
+const evensAsList = (filter (lambda (x) (= (% x 2) 0)) (toList xs));
+const evens = toArray(evensAsList);
+
+const base = {kind: :demo, count: xs.length};
+const dynamicKey = "answer";
+const info = {...base, [dynamicKey]: sum(1, ...xs)};
+
+let c = new StepCounter(10, 3);
+const ticks = [c.next(), c.next(), c.next()];
+
+println("xs=" + str(xs));
+println("squares=" + str(squares));
+println("evens=" + str(evens));
+println("sum=" + str(info.answer));
+println("ticks=" + str(ticks));
+
+const label = cond {
+  info.answer > 30 => :large;
+  info.answer > 10 => :medium;
+  else => :small;
+};
+
+println(match label {
+  :large => "large result";
+  :medium => "medium result";
+  else => "small result";
+});
+
+const piped = xs |> toList |> (lambda (ys) (reverse ys)) |> toArray;
+println("pipeline=" + str(piped));

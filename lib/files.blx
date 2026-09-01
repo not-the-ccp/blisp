@@ -1,0 +1,13 @@
+include "path.blx";
+
+fn _filesWalk(root) {
+  let out=[];
+  if (!fs.exists(root)) return out;
+  out.push(root);
+  if (fs.isDir(root)) for (let name of fs.list(root)) for (let p of _filesWalk(path.join(root,name))) out.push(p);
+  return out;
+}
+fn _filesCopy(src,dst) { fs.writeBytes(dst,fs.readBytes(src)); return dst; }
+fn _filesReadLines(p) { return fs.readText(p).lines(); }
+fn _filesWriteLines(p, lines) { return fs.writeText(p,toArray(lines).join("\n")); }
+const files = {walk:_filesWalk, copy:_filesCopy, readLines:_filesReadLines, writeLines:_filesWriteLines};

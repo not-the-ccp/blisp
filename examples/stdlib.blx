@@ -1,0 +1,18 @@
+include "../lib/std.blx";
+
+let words = "to be or not to be that is the question".words();
+let counts = new Counter(words);
+println(counts.mostCommon(3));
+
+let squares = seq.collect(seq.take(seq.map(seq.count(1,1), x=>x*x), 8));
+println(squares);
+
+let document = {language:"BLisp", useful:true, values:[1,2,3], face:"🙂"};
+let encoded = json.stringify(document);
+println(encoded);
+println(json.parse(encoded).face);
+
+let packet = new BinaryWriter().u16be(0xbeef).varuint(300).utf8("hello").finish();
+println(packet.hex());
+
+println(uuid.v4());

@@ -1,0 +1,7 @@
+include "../lib/base64.blx";
+let data = b"hello\x00world\xff";
+let encoded = base64.encode(data);
+let decoded = base64.decode(encoded);
+assert(decoded == data, "base64 round trip");
+println(encoded);
+println(decoded.hex());

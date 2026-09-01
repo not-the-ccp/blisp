@@ -1,0 +1,45 @@
+include "math.blx";
+
+fn _statsData(values) {
+  let xs = toArray(values);
+  if (xs.length == 0) throw({kind: :empty, message: "statistics requires at least one value"});
+  return xs;
+}
+fn _statsMean(values) { let xs = _statsData(values); return float(math.sum(xs)) / xs.length; }
+fn _statsMedian(values) {
+  let xs = _statsData(values).sorted();
+  let n = xs.length; let m = n / 2;
+  return n % 2 == 1 ? xs[m] : (float(xs[m - 1]) + xs[m]) / 2.0;
+}
+fn _statsVariance(values, sample) {
+  let xs = _statsData(values); let n = xs.length;
+  if (sample and n < 2) throw({kind: :value, message: "sample variance requires at least two values"});
+  let mean = _statsMean(xs); let total = 0.0;
+  for (let x of xs) { let d = x - mean; total += d * d; }
+  return total / (sample ? n - 1 : n);
+}
+fn _statsQuantile(values, q) {
+  if (q < 0.0 or q > 1.0) throw({kind: :value, message: "quantile q must be in [0,1]"});
+  let xs = _statsData(values).sorted();
+  if (xs.length == 1) return xs[0];
+  let pos = q * (xs.length - 1); let lo = int(pos); let hi = lo + 1;
+  if (hi >= xs.length) return xs[lo];
+  let frac = pos - lo;
+  return xs[lo] + (xs[hi] - xs[lo]) * frac;
+}
+fn _statsHistogram(values) {
+  let c = new HashMap();
+  for (let x of values) c.set(x, c.getOr(x, 0) + 1);
+  return c;
+}
+
+const stats = {
+  mean: _statsMean,
+  median: _statsMedian,
+  variance: fn(values) { return _statsVariance(values, false); },
+  sampleVariance: fn(values) { return _statsVariance(values, true); },
+  stdev: fn(values) { return math.sqrt(_statsVariance(values, false)); },
+  sampleStdev: fn(values) { return math.sqrt(_statsVariance(values, true)); },
+  quantile: _statsQuantile,
+  histogram: _statsHistogram
+};

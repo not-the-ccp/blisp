@@ -1,0 +1,45 @@
+include "prelude.blx";
+
+fn _cliConvert(raw, kind) {
+  if (kind == null or kind == :string or kind == "string") return raw;
+  if (kind == :int or kind == "int") return int(raw);
+  if (kind == :float or kind == "float") return float(raw);
+  if (kind == :bool or kind == "bool") return raw == "true" or raw == "1" or raw == "yes";
+  throw({kind: :cli, message: "unknown option type", type: kind});
+}
+fn _cliFindShort(spec, shortName) {
+  for (let name of keys(spec)) if (spec[name].short == shortName) return name;
+  return null;
+}
+fn _cliParse(argv, spec) {
+  let options = {}; let positionals = []; let i = 0;
+  for (let name of keys(spec)) if ("default" in spec[name]) options[name] = spec[name].default;
+  while (i < argv.length) {
+    let arg = argv[i];
+    if (arg == "--") { i++; while (i < argv.length) { positionals.push(argv[i]); i++; } break; }
+    if (arg.startsWith("--")) {
+      let body = arg.slice(2); let pair = body.split("="); let name = pair[0];
+      if (name in spec) {} else throw({kind: :cli, message: "unknown option --" + name});
+      let def = spec[name];
+      if (def.type == :bool or def.type == "bool") options[name] = true;
+      else {
+        let raw;
+        if (pair.length > 1) raw = pair.slice(1).join("=");
+        else { i++; if (i >= argv.length) throw({kind: :cli, message: "missing value for --" + name}); raw = argv[i]; }
+        options[name] = _cliConvert(raw, def.type);
+      }
+      i++; continue;
+    }
+    if (arg.startsWith("-") and arg.length == 2) {
+      let name = _cliFindShort(spec, arg.slice(1));
+      if (name == null) throw({kind: :cli, message: "unknown option " + arg});
+      let def = spec[name];
+      if (def.type == :bool or def.type == "bool") options[name] = true;
+      else { i++; if (i >= argv.length) throw({kind: :cli, message: "missing value for " + arg}); options[name] = _cliConvert(argv[i], def.type); }
+      i++; continue;
+    }
+    positionals.push(arg); i++;
+  }
+  return {options, positionals};
+}
+const cli = {parse: _cliParse};

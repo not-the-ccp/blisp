@@ -1,0 +1,40 @@
+include "prelude.blx";
+
+fn _csvParse(textValue, delimiter) {
+  let delim = delimiter == null ? "," : delimiter;
+  if (delim.length != 1) throw({kind: :value, message: "CSV delimiter must be one character"});
+  let rows = []; let row = []; let field = ""; let quoted = false; let i = 0;
+  while (i < textValue.length) {
+    let c = textValue.charAt(i);
+    if (quoted) {
+      if (c == "\"") {
+        if (i + 1 < textValue.length and textValue.charAt(i + 1) == "\"") { field += "\""; i += 2; continue; }
+        quoted = false; i++; continue;
+      }
+      field += c; i++; continue;
+    }
+    if (c == "\"" and field == "") { quoted = true; i++; continue; }
+    if (c == delim) { row.push(field); field = ""; i++; continue; }
+    if (c == "\n") { row.push(field); rows.push(row); row = []; field = ""; i++; continue; }
+    if (c == "\r") { i++; continue; }
+    field += c; i++;
+  }
+  if (quoted) throw({kind: :csv, message: "unterminated quoted field"});
+  if (field != "" or row.length > 0) { row.push(field); rows.push(row); }
+  return rows;
+}
+fn _csvField(value, delimiter) {
+  let s = str(value);
+  if (s.contains(delimiter) or s.contains("\n") or s.contains("\r") or s.contains("\""))
+    return "\"" + s.split("\"").join("\"\"") + "\"";
+  return s;
+}
+fn _csvStringify(rows, delimiter) {
+  let delim = delimiter == null ? "," : delimiter; let lines = [];
+  for (let row of rows) { let fields = []; for (let x of row) fields.push(_csvField(x, delim)); lines.push(fields.join(delim)); }
+  return lines.join("\n");
+}
+const csv = {
+  parse: fn(textValue, ...rest) { let xs = toArray(rest); return _csvParse(textValue, xs.length == 0 ? null : xs[0]); },
+  stringify: fn(rows, ...rest) { let xs = toArray(rest); return _csvStringify(rows, xs.length == 0 ? null : xs[0]); }
+};

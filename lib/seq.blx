@@ -1,0 +1,183 @@
+include "prelude.blx";
+
+// Lazy sequence combinators. Unlike eager Array.map/filter, these operate on
+// the generic iterator protocol and therefore work with streams/infinite data.
+
+proto _MapIter {
+  constructor(it, f) { this.it = it; this.f = f; }
+  __iter__() { return this; }
+  next() {
+    let s = nextItem(this.it);
+    return s.done ? s : {done: false, value: this.f(s.value)};
+  }
+}
+proto _MapSeq {
+  constructor(src, f) { this.src = src; this.f = f; }
+  __iter__() { return new _MapIter(iterator(this.src), this.f); }
+}
+
+proto _FilterIter {
+  constructor(it, pred) { this.it = it; this.pred = pred; }
+  __iter__() { return this; }
+  next() {
+    loop {
+      let s = nextItem(this.it);
+      if (s.done or this.pred(s.value)) return s;
+    }
+  }
+}
+proto _FilterSeq {
+  constructor(src, pred) { this.src = src; this.pred = pred; }
+  __iter__() { return new _FilterIter(iterator(this.src), this.pred); }
+}
+
+proto _TakeIter {
+  constructor(it, n) { this.it = it; this.left = n; }
+  __iter__() { return this; }
+  next() {
+    if (this.left <= 0) return {done: true, value: null};
+    this.left--;
+    return nextItem(this.it);
+  }
+}
+proto _TakeSeq {
+  constructor(src, n) { this.src = src; this.n = n; }
+  __iter__() { return new _TakeIter(iterator(this.src), this.n); }
+}
+
+proto _DropIter {
+  constructor(it, n) { this.it = it; this.left = n; this.ready = false; }
+  __iter__() { return this; }
+  next() {
+    if (!this.ready) {
+      while (this.left > 0) {
+        let s = nextItem(this.it);
+        if (s.done) return s;
+        this.left--;
+      }
+      this.ready = true;
+    }
+    return nextItem(this.it);
+  }
+}
+proto _DropSeq {
+  constructor(src, n) { this.src = src; this.n = n; }
+  __iter__() { return new _DropIter(iterator(this.src), this.n); }
+}
+
+proto _CountIter {
+  constructor(start, step) { this.value = start; this.step = step; }
+  __iter__() { return this; }
+  next() { let v = this.value; this.value += this.step; return {done: false, value: v}; }
+}
+
+proto _RepeatIter {
+  constructor(value, n) { this.value = value; this.left = n; }
+  __iter__() { return this; }
+  next() {
+    if (this.left != null) {
+      if (this.left <= 0) return {done: true, value: null};
+      this.left--;
+    }
+    return {done: false, value: this.value};
+  }
+}
+
+proto _ChainIter {
+  constructor(sources) { this.sources = iterator(sources); this.current = null; }
+  __iter__() { return this; }
+  next() {
+    loop {
+      if (this.current != null) {
+        let s = nextItem(this.current);
+        if (!s.done) return s;
+        this.current = null;
+      }
+      let outer = nextItem(this.sources);
+      if (outer.done) return outer;
+      this.current = iterator(outer.value);
+    }
+  }
+}
+proto _ChainSeq {
+  constructor(sources) { this.sources = sources; }
+  __iter__() { return new _ChainIter(this.sources); }
+}
+
+proto _ZipIter {
+  constructor(sources) {
+    this.its = [];
+    for (let s of sources) this.its.push(iterator(s));
+  }
+  __iter__() { return this; }
+  next() {
+    let row = [];
+    for (let it of this.its) {
+      let s = nextItem(it);
+      if (s.done) return {done: true, value: null};
+      row.push(s.value);
+    }
+    return {done: false, value: row};
+  }
+}
+proto _ZipSeq {
+  constructor(sources) { this.sources = sources; }
+  __iter__() { return new _ZipIter(this.sources); }
+}
+
+proto _EnumerateIter {
+  constructor(src, start) { this.it = iterator(src); this.i = start; }
+  __iter__() { return this; }
+  next() {
+    let s = nextItem(this.it);
+    if (s.done) return s;
+    let i = this.i; this.i++;
+    return {done: false, value: [i, s.value]};
+  }
+}
+proto _EnumerateSeq {
+  constructor(src, start) { this.src = src; this.start = start; }
+  __iter__() { return new _EnumerateIter(this.src, this.start); }
+}
+
+fn _seqFold(src, f, initial) {
+  let acc = initial;
+  for (let x of src) acc = f(acc, x);
+  return acc;
+}
+fn _seqReduce(src, f) {
+  let it = iterator(src);
+  let first = nextItem(it);
+  if (first.done) throw({kind: :empty, message: "reduce of empty sequence"});
+  let acc = first.value;
+  loop {
+    let s = nextItem(it);
+    if (s.done) break;
+    acc = f(acc, s.value);
+  }
+  return acc;
+}
+fn _seqFind(src, pred, fallback) {
+  for (let x of src) if (pred(x)) return x;
+  return fallback;
+}
+fn _seqAny(src, pred) { for (let x of src) if (pred(x)) return true; return false; }
+fn _seqAll(src, pred) { for (let x of src) if (!pred(x)) return false; return true; }
+
+const seq = {
+  map: fn(src, f) { return new _MapSeq(src, f); },
+  filter: fn(src, pred) { return new _FilterSeq(src, pred); },
+  take: fn(src, n) { return new _TakeSeq(src, n); },
+  drop: fn(src, n) { return new _DropSeq(src, n); },
+  count: fn(start, step) { return new _CountIter(start == null ? 0 : start, step == null ? 1 : step); },
+  repeat: fn(value, n) { return new _RepeatIter(value, n); },
+  chain: fn(...sources) { return new _ChainSeq(sources); },
+  zip: fn(...sources) { return new _ZipSeq(sources); },
+  enumerate: fn(src, start) { return new _EnumerateSeq(src, start == null ? 0 : start); },
+  collect: fn(src) { return toArray(src); },
+  fold: _seqFold,
+  reduce: _seqReduce,
+  find: _seqFind,
+  any: _seqAny,
+  all: _seqAll
+};

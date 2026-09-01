@@ -1,0 +1,35 @@
+include "prelude.blx";
+
+fn httpRequest(host, port, method, path, headers, body) {
+  let socket = net.connect(host, port);
+  let request = method + " " + path + " HTTP/1.0\r\n";
+  request += "Host: " + host + "\r\n";
+  request += "Connection: close\r\n";
+
+  if (headers != null) {
+    for (let key of keys(headers)) request += key + ": " + str(headers[key]) + "\r\n";
+  }
+  if (body != null) request += "Content-Length: " + str(len(body)) + "\r\n";
+  request += "\r\n";
+  socket.write(request);
+  if (body != null) socket.write(body);
+
+  let statusLine = socket.readLine();
+  let responseHeaders = {};
+  loop {
+    let line = socket.readLine();
+    if (line == null or line == "") break;
+    let parts = line.split(":");
+    let key = parts[0].trim().lower();
+    let value = parts.slice(1).join(":").trim();
+    responseHeaders[key] = value;
+  }
+  let responseBody = socket.readAll();
+  socket.close();
+  return {statusLine, headers: responseHeaders, body: responseBody};
+}
+
+const http = {
+  request: httpRequest,
+  get: fn(host, port, path) { return httpRequest(host, port, "GET", path, null, null); }
+};

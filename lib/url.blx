@@ -1,0 +1,43 @@
+include "uri.blx";
+
+fn _urlIndex(s,needle,start){let from=start==null?0:start;if(needle=="")return from;for(let i=from;i+needle.length<=s.length;i++)if(s.slice(i,i+needle.length)==needle)return i;return -1;}
+fn _urlDigits(s){if(s=="")return false;for(let c of s)if(c<"0" or c>"9")return false;return true;}
+fn _urlSafeInput(s){for(let b of bytes(s))if(b<=32 or b==127)throw({kind::url,message:"URL contains whitespace/control characters"});return s;}
+fn _urlValidHost(host,ipv6){
+  if(host=="")return false;
+  if(ipv6){for(let c of host)if(!((c>="0" and c<="9")or(c>="a" and c<="f")or(c>="A" and c<="F")or c==":" or c=="."))return false;return host.contains(":");}
+  for(let c of host)if(!((c>="0" and c<="9")or(c>="a" and c<="z")or(c>="A" and c<="Z")or c=="-" or c=="."))return false;
+  return !host.startsWith(".") and !host.endsWith(".");
+}
+fn _parseHttpUrl(raw){
+  raw=_urlSafeInput(raw);let sep=_urlIndex(raw,"://",0);if(sep<=0)throw({kind::url,message:"expected absolute URL with scheme://"});
+  let scheme=raw.slice(0,sep).lower();if(scheme!="http" and scheme!="https")throw({kind::url,message:"unsupported URL scheme",scheme});
+  let start=sep+3;let end=raw.length;for(let marker of ["/","?","#"]){let i=_urlIndex(raw,marker,start);if(i>=0 and i<end)end=i;}
+  let authority=raw.slice(start,end);if(authority=="" or authority.contains("@"))throw({kind::url,message:"empty authority or userinfo is not allowed"});
+  let host="";let port=null;let ipv6=false;
+  if(authority.startsWith("[")){
+    let close=_urlIndex(authority,"]",1);if(close<0)throw({kind::url,message:"unterminated IPv6 host"});
+    host=authority.slice(1,close);ipv6=true;let tail=authority.slice(close+1);
+    if(tail!=""){if(!tail.startsWith(":"))throw({kind::url,message:"invalid authority after IPv6 host"});let p=tail.slice(1);if(!_urlDigits(p))throw({kind::url,message:"invalid port"});port=int(p);}
+  }else{
+    let colon=-1;for(let i=0;i<authority.length;i++)if(authority.charAt(i)==":"){if(colon>=0)throw({kind::url,message:"IPv6 hosts must use brackets"});colon=i;}
+    if(colon>=0){host=authority.slice(0,colon);let p=authority.slice(colon+1);if(!_urlDigits(p))throw({kind::url,message:"invalid port"});port=int(p);}else host=authority;
+  }
+  if(!_urlValidHost(host,ipv6))throw({kind::url,message:"invalid host",host});host=host.lower();
+  if(port!=null and (port<1 or port>65535))throw({kind::url,message:"port outside 1..65535",port});
+  let rest=raw.slice(end);let fragment="";let hash=_urlIndex(rest,"#",0);if(hash>=0){fragment=rest.slice(hash+1);rest=rest.slice(0,hash);}
+  let query="";let q=_urlIndex(rest,"?",0);if(q>=0){query=rest.slice(q+1);rest=rest.slice(0,q);}
+  let pathValue=rest==""?"/":rest;if(!pathValue.startsWith("/"))throw({kind::url,message:"HTTP URL path must be absolute"});
+  return {scheme,host,port:port==null?(scheme=="https"?443:80):port,explicitPort:port!=null,path:pathValue,query,fragment,ipv6};
+}
+fn _formatHttpUrl(u){
+  let host=u.ipv6?"["+u.host+"]":u.host;let defaultPort=u.scheme=="https"?443:80;
+  let authority=host+((u.explicitPort or u.port!=defaultPort)?":"+str(u.port):"");
+  return u.scheme+"://"+authority+(u.path==null?"/":u.path)+(u.query!=null and u.query!=""?"?"+u.query:"")+(u.fragment!=null and u.fragment!=""?"#"+u.fragment:"");
+}
+fn _urlOrigin(u){let host=u.ipv6?"["+u.host+"]":u.host;let defaultPort=u.scheme=="https"?443:80;return u.scheme+"://"+host+(u.port==defaultPort?"":":"+str(u.port));}
+const url={
+  parseHttp:_parseHttpUrl, formatHttp:_formatHttpUrl, origin:_urlOrigin,
+  encodeComponent:uri.encodeComponent,decodeComponent:uri.decodeComponent,
+  encodeQuery:uri.encodeQuery,decodeQuery:uri.decodeQuery
+};

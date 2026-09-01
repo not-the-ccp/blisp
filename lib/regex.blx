@@ -1,0 +1,4 @@
+include "prelude.blx";
+fn _regexTest(pattern,textValue){return regexMatch(pattern,textValue)!=null;}
+fn _regexFull(pattern,textValue){let m=regexMatch(pattern,textValue);return m==null?null:m.full;}
+const regex={match:regexMatch,test:_regexTest,full:_regexFull};

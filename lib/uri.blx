@@ -1,0 +1,46 @@
+include "prelude.blx";
+
+const _URI_HEX = "0123456789ABCDEF";
+fn _uriSafeByte(b) {
+  return (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or (b >= 48 and b <= 57) or b == 45 or b == 46 or b == 95 or b == 126;
+}
+fn _uriEncode(s) {
+  let out = "";
+  for (let b of bytes(s)) {
+    if (_uriSafeByte(b)) out += bytes([b]).decode();
+    else out += "%" + _URI_HEX.charAt((b >> 4) & 15) + _URI_HEX.charAt(b & 15);
+  }
+  return out;
+}
+fn _uriHex(ch) {
+  let u = ch.upper();
+  for (let i = 0; i < 16; i++) if (_URI_HEX.charAt(i) == u) return i;
+  throw({kind: :uri, message: "invalid percent escape"});
+}
+fn _uriDecode(s) {
+  let out = bytes(); let i = 0;
+  while (i < s.length) {
+    if (s.charAt(i) == "%") {
+      if (i + 2 >= s.length) throw({kind: :uri, message: "truncated percent escape"});
+      out.push((_uriHex(s.charAt(i + 1)) << 4) | _uriHex(s.charAt(i + 2))); i += 3;
+    } else {
+      let bs = bytes(s.charAt(i)); for (let b of bs) out.push(b); i++;
+    }
+  }
+  return out.decode();
+}
+fn _uriQueryEncode(obj) {
+  let parts = [];
+  for (let k of keys(obj)) parts.push(_uriEncode(k) + "=" + _uriEncode(str(obj[k])));
+  return parts.join("&");
+}
+fn _uriQueryDecode(q) {
+  let out = {};
+  if (q == "") return out;
+  for (let part of q.split("&")) {
+    let pair = part.split("="); let key = _uriDecode(pair[0]); let value = pair.length > 1 ? _uriDecode(pair.slice(1).join("=")) : "";
+    out[key] = value;
+  }
+  return out;
+}
+const uri = {encodeComponent: _uriEncode, decodeComponent: _uriDecode, encodeQuery: _uriQueryEncode, decodeQuery: _uriQueryDecode};

@@ -1,0 +1,144 @@
+include "text.blx";
+
+fn _jsonError(message, pos) { throw({kind: :json, message, position: pos}); }
+const _JSON_HEX = "0123456789abcdef";
+fn _jsonHexDigit(c, pos) {
+  let x = c.lower(); for (let i=0;i<16;i++) if (_JSON_HEX.charAt(i)==x) return i;
+  _jsonError("invalid hex digit in \u escape", pos);
+}
+fn _jsonHex4(n) { return _JSON_HEX.charAt((n>>12)&15)+_JSON_HEX.charAt((n>>8)&15)+_JSON_HEX.charAt((n>>4)&15)+_JSON_HEX.charAt(n&15); }
+
+proto _JsonParser {
+  constructor(src) { this.src = src; this.pos = 0; }
+  peek() { return this.src.charAt(this.pos); }
+  take() { let c = this.peek(); this.pos++; return c; }
+  skipWS() { while (this.peek() != "" and " \n\t\r".contains(this.peek())) this.pos++; }
+  expect(ch) { let got = this.take(); if (got != ch) _jsonError("expected " + ch + ", got " + got, this.pos - 1); }
+
+  string() {
+    this.expect("\""); let out = "";
+    loop {
+      let c = this.take();
+      if (c == "") _jsonError("unterminated string", this.pos);
+      if (c == "\"") break;
+      if (c == "\\") {
+        let e = this.take();
+        out += match e {
+          "\"" => "\""; "\\" => "\\"; "/" => "/";
+          "n" => "\n"; "r" => "\r"; "t" => "\t";
+          "b" => text.fromCodePoint(8); "f" => text.fromCodePoint(12);
+          "u" => do {
+            let cp = 0;
+            for (let j=0;j<4;j++) cp = (cp<<4) | _jsonHexDigit(this.take(), this.pos-1);
+            if (cp >= 0xd800 and cp <= 0xdbff) {
+              if (this.take() != "\\" or this.take() != "u") _jsonError("high surrogate without low surrogate", this.pos-2);
+              let low=0; for (let j=0;j<4;j++) low=(low<<4)|_jsonHexDigit(this.take(),this.pos-1);
+              if (low < 0xdc00 or low > 0xdfff) _jsonError("invalid low surrogate",this.pos-4);
+              cp = 0x10000 + ((cp-0xd800)<<10) + (low-0xdc00);
+            } else if (cp >= 0xdc00 and cp <= 0xdfff) _jsonError("unexpected low surrogate",this.pos-4);
+            text.fromCodePoint(cp);
+          };
+          else => do { _jsonError("bad escape", this.pos - 1); ""; };
+        };
+      } else out += c;
+    }
+    return out;
+  }
+
+  number() {
+    let start = this.pos;
+    if (this.peek() == "-") this.pos++;
+    while (this.peek() != "" and "0123456789".contains(this.peek())) this.pos++;
+    if (this.peek() == ".") { this.pos++; while (this.peek() != "" and "0123456789".contains(this.peek())) this.pos++; }
+    if (this.peek() == "e" or this.peek() == "E") {
+      this.pos++; if (this.peek() == "+" or this.peek() == "-") this.pos++;
+      while (this.peek() != "" and "0123456789".contains(this.peek())) this.pos++;
+    }
+    let raw = this.src.slice(start, this.pos);
+    let parsed = attempt(() => num(raw));
+    if (!parsed.ok) _jsonError("invalid number", start);
+    return parsed.value;
+  }
+
+  array() {
+    this.expect("["); let out = []; this.skipWS();
+    if (this.peek() == "]") { this.pos++; return out; }
+    loop {
+      out.push(this.value()); this.skipWS(); let sep = this.take();
+      if (sep == "]") break;
+      if (sep != ",") _jsonError("expected comma or ]", this.pos - 1);
+      this.skipWS();
+    }
+    return out;
+  }
+
+  object() {
+    this.expect("{"); let out = {}; this.skipWS();
+    if (this.peek() == "}") { this.pos++; return out; }
+    loop {
+      if (this.peek() != "\"") _jsonError("object key must be a string", this.pos);
+      let key = this.string(); this.skipWS(); this.expect(":"); this.skipWS();
+      out[key] = this.value(); this.skipWS(); let sep = this.take();
+      if (sep == "}") break;
+      if (sep != ",") _jsonError("expected comma or }", this.pos - 1);
+      this.skipWS();
+    }
+    return out;
+  }
+
+  value() {
+    this.skipWS(); let c = this.peek();
+    if (c == "\"") return this.string();
+    if (c == "[") return this.array();
+    if (c == "{") return this.object();
+    if (c == "-" or "0123456789".contains(c)) return this.number();
+    if (this.src.slice(this.pos, this.pos + 4) == "true") { this.pos += 4; return true; }
+    if (this.src.slice(this.pos, this.pos + 5) == "false") { this.pos += 5; return false; }
+    if (this.src.slice(this.pos, this.pos + 4) == "null") { this.pos += 4; return null; }
+    _jsonError("unexpected token", this.pos);
+  }
+
+  parse() { let out = this.value(); this.skipWS(); if (this.pos != this.src.length) _jsonError("trailing input", this.pos); return out; }
+}
+
+fn _jsonEscape(s) {
+  let out = "";
+  for (let ch of text.chars(s)) {
+    let cp = text.codePoint(ch);
+    if (ch == "\\") out += "\\\\";
+    else if (ch == "\"") out += "\\\"";
+    else if (ch == "\n") out += "\\n";
+    else if (ch == "\r") out += "\\r";
+    else if (ch == "\t") out += "\\t";
+    else if (cp == 8) out += "\\b";
+    else if (cp == 12) out += "\\f";
+    else if (cp < 32) out += "\\u" + _jsonHex4(cp);
+    else out += ch;
+  }
+  return out;
+}
+fn _jsonSeen(stack, value) { for (let x of stack) if (x is value) return true; return false; }
+fn _jsonStringify(value, stack) {
+  let t = type(value);
+  if (value == null) return "null";
+  if (value == true) return "true";
+  if (value == false) return "false";
+  if (t == "int" or t == "float") return str(value);
+  if (t == "string") return "\"" + _jsonEscape(value) + "\"";
+  if (t != "array" and t != "object") throw({kind: :json, message: "value is not JSON serializable", valueType: t});
+  if (_jsonSeen(stack, value)) throw({kind: :json, message: "cyclic value"});
+  let nextStack = stack.concat([value]);
+  if (t == "array") {
+    let parts = [];
+    for (let x of value) parts.push(_jsonStringify(x, nextStack));
+    return "[" + parts.join(",") + "]";
+  }
+  let fields = [];
+  for (let key of keys(value)) fields.push("\"" + _jsonEscape(key) + "\":" + _jsonStringify(value[key], nextStack));
+  return "{" + fields.join(",") + "}";
+}
+
+const json = {
+  parse: fn(text) { return new _JsonParser(text).parse(); },
+  stringify: fn(value) { return _jsonStringify(value, []); }
+};

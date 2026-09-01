@@ -1,0 +1,27 @@
+include "../lib/text.blx";
+
+fn transformedLength(s) {
+  return s
+    |> .encode("utf-8")
+    |> .length
+    |> text.formatInt(16)
+    |> text.chars
+    |> .join("-");
+}
+
+println(transformedLength("abcdefghij")); // a
+
+let parseHex = text.parseInt(?, 16);
+println(["10", "20", "ff"].map(parseHex));
+
+let total = [1, 2, 3, 4]
+  |> .map { x => x * x }
+  |> .reduce(0) { acc, x => acc + x };
+println(total);
+
+fn fresh(xs = []) {
+  xs.push(1);
+  return xs;
+}
+println(fresh());
+println(fresh());

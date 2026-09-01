@@ -1,0 +1,207 @@
+// Higher-level facilities deliberately implemented in the language itself.
+// This file is evidence that the runtime protocols are sufficient to build
+// useful containers and binary codecs without adding new Bash builtins.
+
+fn Ok(value) { return {ok: true, value}; }
+fn Err(error) { return {ok: false, error}; }
+fn unwrap(result) {
+  if (!result.ok) throw(result.error);
+  return result.value;
+}
+fn unwrapOr(result, fallback) { return result.ok ? result.value : fallback; }
+fn tap(value, effect) { effect(value); return value; }
+
+proto AssocMap {
+  constructor() { this._entries = []; }
+
+  _index(key) {
+    for (let i = 0; i < this._entries.length; i++) {
+      if (this._entries[i][0] == key) return i;
+    }
+    return -1;
+  }
+
+  set(key, value) {
+    let i = this._index(key);
+    if (i < 0) this._entries.push([key, value]);
+    else this._entries[i][1] = value;
+    return this;
+  }
+
+  get(key) {
+    let i = this._index(key);
+    return i < 0 ? null : this._entries[i][1];
+  }
+
+  getOr(key, fallback) {
+    let i = this._index(key);
+    return i < 0 ? fallback : this._entries[i][1];
+  }
+
+  has(key) { return this._index(key) >= 0; }
+
+  delete(key) {
+    let i = this._index(key);
+    if (i < 0) return false;
+    let next = [];
+    for (let j = 0; j < this._entries.length; j++) {
+      if (j != i) next.push(this._entries[j]);
+    }
+    this._entries = next;
+    return true;
+  }
+
+  keys() { return this._entries.map(pair => pair[0]); }
+  values() { return this._entries.map(pair => pair[1]); }
+  entries() { return this._entries.slice(0); }
+  clear() { this._entries = []; return this; }
+  __len__() { return this._entries.length; }
+  __iter__() { return this._entries; }
+  __str__() { return "AssocMap(" + str(this._entries) + ")"; }
+}
+
+
+proto HashMap {
+  constructor() { this._buckets = {}; this._size = 0; }
+
+  _bucket(key, create) {
+    let h = str(hash(key));
+    let bucket = this._buckets[h];
+    if (bucket == null and create) {
+      bucket = [];
+      this._buckets[h] = bucket;
+    }
+    return bucket;
+  }
+
+  _pair(key) {
+    let bucket = this._bucket(key, false);
+    if (bucket == null) return null;
+    for (let pair of bucket) if (pair[0] == key) return pair;
+    return null;
+  }
+
+  set(key, value) {
+    let pair = this._pair(key);
+    if (pair != null) { pair[1] = value; return this; }
+    this._bucket(key, true).push([key, value]);
+    this._size++;
+    return this;
+  }
+
+  get(key) { let pair = this._pair(key); return pair == null ? null : pair[1]; }
+  getOr(key, fallback) { let pair = this._pair(key); return pair == null ? fallback : pair[1]; }
+  has(key) { return this._pair(key) != null; }
+
+  delete(key) {
+    let h = str(hash(key));
+    let bucket = this._buckets[h];
+    if (bucket == null) return false;
+    let next = [];
+    let found = false;
+    for (let pair of bucket) {
+      if (!found and pair[0] == key) found = true;
+      else next.push(pair);
+    }
+    if (!found) return false;
+    this._size--;
+    if (next.length == 0) delete this._buckets[h];
+    else this._buckets[h] = next;
+    return true;
+  }
+
+  entries() {
+    let out = [];
+    for (let h of keys(this._buckets)) for (let pair of this._buckets[h]) out.push(pair);
+    return out;
+  }
+  keys() { return this.entries().map(pair => pair[0]); }
+  values() { return this.entries().map(pair => pair[1]); }
+  clear() { this._buckets = {}; this._size = 0; return this; }
+  __len__() { return this._size; }
+  __iter__() { return this.entries(); }
+  __str__() { return "HashMap(" + str(this.entries()) + ")"; }
+}
+
+proto Set {
+  constructor(values) {
+    this._map = new HashMap();
+    if (values != null) for (let value of values) this.add(value);
+  }
+  add(value) { this._map.set(value, true); return this; }
+  has(value) { return this._map.has(value); }
+  delete(value) { return this._map.delete(value); }
+  values() { return this._map.keys(); }
+  clear() { this._map.clear(); return this; }
+  __len__() { return len(this._map); }
+  __iter__() { return this.values(); }
+  __str__() { return "Set(" + str(this.values()) + ")"; }
+}
+
+proto Queue {
+  constructor() { this._items = []; this._head = 0; }
+  push(value) { this._items.push(value); return this; }
+  empty() { return this._head >= this._items.length; }
+  pop() {
+    if (this.empty()) return null;
+    let value = this._items[this._head];
+    this._head++;
+    // Compact occasionally; this policy is library code, not runtime policy.
+    if (this._head > 64 and this._head * 2 > this._items.length) {
+      this._items = this._items.slice(this._head);
+      this._head = 0;
+    }
+    return value;
+  }
+  __len__() { return this._items.length - this._head; }
+  __iter__() { return this._items.slice(this._head); }
+}
+
+proto ByteWriter {
+  constructor() { this.data = bytes(); }
+  u8(x) { this.data.push(x); return this; }
+  u16be(x) {
+    this.data.push((x / 256) % 256, x % 256);
+    return this;
+  }
+  u32be(x) {
+    this.data.push((x / 16777216) % 256,
+                   (x / 65536) % 256,
+                   (x / 256) % 256,
+                   x % 256);
+    return this;
+  }
+  put(data) {
+    for (let b of data) this.data.push(b);
+    return this;
+  }
+  finish() { return bytes(this.data); }
+}
+
+proto ByteReader {
+  constructor(data) { this.data = data; this.pos = 0; }
+  remaining() { return this.data.length - this.pos; }
+  u8() {
+    if (this.remaining() < 1) throw({kind: :eof, need: 1});
+    let x = this.data[this.pos]; this.pos++; return x;
+  }
+  u16be() { return this.u8() * 256 + this.u8(); }
+  u32be() {
+    return this.u8() * 16777216 + this.u8() * 65536 + this.u8() * 256 + this.u8();
+  }
+  take(n) {
+    if (this.remaining() < n) throw({kind: :eof, need: n, remaining: this.remaining()});
+    let out = this.data.slice(this.pos, this.pos + n);
+    this.pos += n;
+    return out;
+  }
+}
+
+fn runText(argv, options) {
+  let r = process.run(argv, options);
+  return {
+    status: r.status,
+    stdout: r.stdout.decode(),
+    stderr: r.stderr.decode()
+  };
+}

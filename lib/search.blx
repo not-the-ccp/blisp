@@ -1,0 +1,26 @@
+include "prelude.blx";
+
+fn _bisectLeft(xs, value, less) {
+  let cmp = less == null ? fn(a,b){ return a < b; } : less;
+  let lo = 0; let hi = xs.length;
+  while (lo < hi) { let mid = (lo + hi) / 2; if (cmp(xs[mid], value)) lo = mid + 1; else hi = mid; }
+  return lo;
+}
+fn _bisectRight(xs, value, less) {
+  let cmp = less == null ? fn(a,b){ return a < b; } : less;
+  let lo = 0; let hi = xs.length;
+  while (lo < hi) { let mid = (lo + hi) / 2; if (cmp(value, xs[mid])) hi = mid; else lo = mid + 1; }
+  return lo;
+}
+fn _insertAt(xs, index, value) {
+  xs.push(value);
+  for (let i = xs.length - 1; i > index; i--) xs[i] = xs[i - 1];
+  xs[index] = value;
+  return xs;
+}
+const search = {
+  bisectLeft: fn(xs, value, ...rest) { let r=toArray(rest); return _bisectLeft(xs,value,r.length?r[0]:null); },
+  bisectRight: fn(xs, value, ...rest) { let r=toArray(rest); return _bisectRight(xs,value,r.length?r[0]:null); },
+  insortLeft: fn(xs, value, ...rest) { let r=toArray(rest); return _insertAt(xs,_bisectLeft(xs,value,r.length?r[0]:null),value); },
+  insortRight: fn(xs, value, ...rest) { let r=toArray(rest); return _insertAt(xs,_bisectRight(xs,value,r.length?r[0]:null),value); }
+};

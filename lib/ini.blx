@@ -1,0 +1,23 @@
+include "prelude.blx";
+fn _iniParse(src) {
+  let out={}; let section=out;
+  for (let raw of src.lines()) {
+    let line=raw.trim(); if (line=="" or line.startsWith("#") or line.startsWith(";")) continue;
+    if (line.startsWith("[") and line.endsWith("]")) {
+      let name=line.slice(1,line.length-1).trim(); if (name in out) {} else out[name]={}; section=out[name]; continue;
+    }
+    let parts=line.split("="); if (parts.length<2) throw({kind::ini,message:"expected key=value",line:raw});
+    let key=parts[0].trim(); let value=parts.slice(1).join("=").trim(); section[key]=value;
+  }
+  return out;
+}
+fn _iniStringify(doc) {
+  let lines=[];
+  for (let key of keys(doc)) if (type(doc[key])!="object") lines.push(key+" = "+str(doc[key]));
+  for (let section of keys(doc)) if (type(doc[section])=="object") {
+    if (lines.length) lines.push(""); lines.push("["+section+"]");
+    for (let key of keys(doc[section])) lines.push(key+" = "+str(doc[section][key]));
+  }
+  return lines.join("\n");
+}
+const ini={parse:_iniParse,stringify:_iniStringify};

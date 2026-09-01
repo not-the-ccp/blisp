@@ -1,0 +1,72 @@
+include "../lib/text.blx";
+include "../lib/math.blx";
+include "../lib/testing.blx";
+
+let t = testing.suite("ergonomics");
+
+t.test("forward-growing transform", fn() {
+  let s = "abcdefghij";
+  let out = s
+    |> .encode("utf-8")
+    |> .length
+    |> text.formatInt(16)
+    |> text.chars
+    |> .join("-");
+  testing.equal(out, "a", null);
+});
+
+t.test("pipeline insertion modes", fn() {
+  fn tri(a,b,c) { return a*100+b*10+c; }
+  testing.equal(2 |> tri(3,4), 234, null);
+  testing.equal(2 |>> tri(3,4), 342, null);
+  testing.equal(2 |> tri(3,$,4), 324, null);
+  testing.equal(5 |> $ * 2 + 1, 11, null);
+  testing.equal(5 |> math.clamp(0, 3), 3, null);
+});
+
+t.test("receiver pipeline stages", fn() {
+  testing.equal("  hello  " |> .trim() |> .upper() |> .slice(1,4), "ELL", null);
+  testing.equal([1,2,3] |> .map(x => x*2) |> .join("-"), "2-4-6", null);
+});
+
+t.test("slices", fn() {
+  testing.equal("abcdef"[2:], "cdef", null);
+  testing.equal("abcdef"[:3], "abc", null);
+  testing.equal([1,2,3,4][1:3], [2,3], null);
+});
+
+t.test("call holes", fn() {
+  let parse16 = text.parseInt(?, 16);
+  testing.equal(parse16("ff"), 255, null);
+  fn tri(a,b,c) { return a*100+b*10+c; }
+  let f = tri(?,4,?);
+  testing.equal(f(2,7), 247, null);
+  testing.equal(["10","20","ff"].map(text.parseInt(?,16)), [16,32,255], null);
+});
+
+t.test("call-time defaults", fn() {
+  fn f(a, b=a*2, ...rest) { return [a,b,toArray(rest)]; }
+  testing.equal(f(3), [3,6,[]], null);
+  testing.equal(f(3,10,20,30), [3,10,[20,30]], null);
+
+  fn fresh(xs=[]) { xs.push(1); return xs; }
+  testing.equal(fresh(), [1], null);
+  testing.equal(fresh(), [1], null); // fresh default on every call
+});
+
+t.test("trailing full closures", fn() {
+  fn fold(xs, init, combine) { let acc=init; for(let x of xs) acc=combine(acc,x); return acc; }
+  testing.equal([1,2,3,4].map { x => x*x }, [1,4,9,16], null);
+  testing.equal(fold([1,2,3,4], 0) { acc, x =>
+    let next = acc + x;
+    next;
+  }, 10, null);
+});
+
+t.test("tap preserves pipeline value", fn() {
+  let seen=[];
+  let result=[1,2,3] |> tap(v => seen.push(v.length)) |> .map(x=>x+1);
+  testing.equal(seen,[3],null); testing.equal(result,[2,3,4],null);
+});
+
+t.report();

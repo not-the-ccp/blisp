@@ -1,0 +1,60 @@
+// Base64 implemented entirely in the hybrid language.  The runtime only
+// supplies bytes, strings, integer arithmetic/bit operations, and iteration.
+const BASE64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64Encode(data) {
+  let out = "";
+  for (let i = 0; i < data.length; i += 3) {
+    let remain = data.length - i;
+    let a = data[i];
+    let b = remain > 1 ? data[i + 1] : 0;
+    let c = remain > 2 ? data[i + 2] : 0;
+    let word = (a << 16) | (b << 8) | c;
+    out += BASE64_ALPHABET.charAt((word >> 18) & 63);
+    out += BASE64_ALPHABET.charAt((word >> 12) & 63);
+    out += remain > 1 ? BASE64_ALPHABET.charAt((word >> 6) & 63) : "=";
+    out += remain > 2 ? BASE64_ALPHABET.charAt(word & 63) : "=";
+  }
+  return out;
+}
+
+fn _base64Digit(ch) {
+  for (let i = 0; i < BASE64_ALPHABET.length; i++) {
+    if (BASE64_ALPHABET.charAt(i) == ch) return i;
+  }
+  throw({kind: :base64, message: "invalid base64 character", character: ch});
+}
+
+fn base64Decode(text) {
+  let clean = "";
+  for (let i = 0; i < text.length; i++) {
+    let ch = text.charAt(i);
+    if (!" \t\r\n".contains(ch)) clean += ch;
+  }
+  if (clean.length % 4 != 0) throw({kind: :base64, message: "length must be a multiple of four"});
+
+  let out = bytes();
+  for (let i = 0; i < clean.length; i += 4) {
+    let c0 = clean.charAt(i);
+    let c1 = clean.charAt(i + 1);
+    let c2 = clean.charAt(i + 2);
+    let c3 = clean.charAt(i + 3);
+    if (c0 == "=" or c1 == "=") throw({kind: :base64, message: "invalid padding"});
+
+    let a = _base64Digit(c0);
+    let b = _base64Digit(c1);
+    let c = c2 == "=" ? 0 : _base64Digit(c2);
+    let d = c3 == "=" ? 0 : _base64Digit(c3);
+    let word = (a << 18) | (b << 12) | (c << 6) | d;
+    out.push((word >> 16) & 255);
+    if (c2 != "=") out.push((word >> 8) & 255);
+    if (c3 != "=") out.push(word & 255);
+
+    if (c2 == "=" and c3 != "=") throw({kind: :base64, message: "invalid padding"});
+    if ((c2 == "=" or c3 == "=") and i + 4 != clean.length)
+      throw({kind: :base64, message: "padding before end"});
+  }
+  return out;
+}
+
+const base64 = {encode: base64Encode, decode: base64Decode};

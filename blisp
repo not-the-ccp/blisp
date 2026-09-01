@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+set -u
+
+SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+source "$SELF_DIR/runtime.sh"
+source "$SELF_DIR/compiler.sh"
+source "$SELF_DIR/surface.sh"
+
+usage() {
+  cat <<'TXT'
+usage:
+  blisp run FILE [args...]         # .bl = classic Lisp syntax, .blx/.blh = hybrid syntax
+  blisp eval EXPR
+  blisp evalx EXPR                 # hybrid syntax
+  blisp compile FILE [-o OUTPUT]  # auto-detects .blx/.bx
+  blisp repl
+  blisp replx
+TXT
+}
+
+load_stdlib_interpreted() {
+  local std
+  std=$(cat "$SELF_DIR/stdlib.bl") || return
+  bl_interpret_source "$std" "$BL_GLOBAL_ENV"
+}
+
+is_surface_file() { [[ $1 == *.blx || $1 == *.bx || $1 == *.blh ]]; }
+
+declare -Ag BL_INCLUDE_ACTIVE=() BL_INCLUDE_SEEN=()
+declare -ag BL_SOURCE_CHUNKS=()
+BL_SOURCE_REPLY=
+
+# Hybrid `include` is lexical and ordered, but modules are deliberately kept as
+# separate source chunks instead of being concatenated into one giant string.
+# The Bash lexer is much happier on many modest modules than on one ever-larger
+# substring-scanned source buffer, and compilation can simply append the parsed
+# forms from each chunk.
+bl_collect_hybrid_file() {
+  local file=$1 abs dir line child buf=
+  abs=$(cd -- "$(dirname -- "$file")" && pwd)/$(basename -- "$file") || return
+  [[ -f $abs ]] || { echo "blisp: include not found: $file" >&2; return 1; }
+  [[ ${BL_INCLUDE_ACTIVE[$abs]-0} == 0 ]] || { echo "blisp: include cycle involving $abs" >&2; return 1; }
+  [[ ${BL_INCLUDE_SEEN[$abs]-0} == 0 ]] || return 0
+  BL_INCLUDE_ACTIVE[$abs]=1; BL_INCLUDE_SEEN[$abs]=1; dir=${abs%/*}
+  while IFS= read -r line || [[ -n $line ]]; do
+    if [[ $line =~ ^[[:space:]]*include[[:space:]]+\"([^\"]+)\"[[:space:]]*\;?[[:space:]]*$ ]]; then
+      [[ -z $buf ]] || { BL_SOURCE_CHUNKS+=("$buf"); buf=; }
+      child=${BASH_REMATCH[1]}; [[ $child == /* ]] || child="$dir/$child"
+      bl_collect_hybrid_file "$child" || { unset 'BL_INCLUDE_ACTIVE[$abs]'; return 1; }
+    else
+      buf+="$line"$'\n'
+    fi
+  done < "$abs"
+  [[ -z $buf ]] || BL_SOURCE_CHUNKS+=("$buf")
+  unset 'BL_INCLUDE_ACTIVE[$abs]'
+}
+
+# Compatibility helper for code that still wants the expanded textual source.
+bl_expand_hybrid_file() {
+  BL_SOURCE_CHUNKS=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=()
+  bl_collect_hybrid_file "$1" || return
+  BL_SOURCE_REPLY=
+  local chunk; for chunk in "${BL_SOURCE_CHUNKS[@]}"; do BL_SOURCE_REPLY+="$chunk"$'\n'; done
+}
+
+bl_parse_surface_chunks() {
+  local -a all=() chunk
+  for chunk in "${BL_SOURCE_CHUNKS[@]}"; do
+    [[ -z ${chunk//[[:space:]]/} ]] && continue
+    bl_parse_surface_all "$chunk" || return
+    all+=("${BL_FORMS[@]}")
+  done
+  BL_FORMS=("${all[@]}")
+}
+
+bl_interpret_surface_chunks() {
+  local env=$1 chunk
+  RET=nil
+  for chunk in "${BL_SOURCE_CHUNKS[@]}"; do
+    [[ -z ${chunk//[[:space:]]/} ]] && continue
+    bl_interpret_surface_source "$chunk" "$env" || return
+  done
+}
+
+cmd_run() {
+  (($# >= 1)) || { usage >&2; return 2; }
+  local file=$1; shift
+  [[ -f $file ]] || { echo "blisp: no such file: $file" >&2; return 2; }
+  bl_runtime_init
+  BL_USER_ARGV=("$@")
+  load_stdlib_interpreted || return
+  local src
+  if is_surface_file "$file"; then
+    BL_SOURCE_CHUNKS=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=(); bl_collect_hybrid_file "$file" || return
+    bl_interpret_surface_chunks "$BL_GLOBAL_ENV"
+  else
+    src=$(cat -- "$file") || return; bl_interpret_source "$src" "$BL_GLOBAL_ENV"
+  fi
+}
+
+cmd_eval() {
+  (($# == 1)) || { usage >&2; return 2; }
+  bl_runtime_init
+  load_stdlib_interpreted || return
+  bl_interpret_source "$1" "$BL_GLOBAL_ENV" || return
+  bl_repr "$RET"; printf '\n'
+}
+
+cmd_evalx() {
+  (($# == 1)) || { usage >&2; return 2; }
+  bl_runtime_init
+  load_stdlib_interpreted || return
+  bl_interpret_surface_source "$1" "$BL_GLOBAL_ENV" || return
+  bl_repr "$RET"; printf '\n'
+}
+
+cmd_compile() {
+  (($# >= 1)) || { usage >&2; return 2; }
+  local file=$1; shift; local out=
+  while (($#)); do
+    case $1 in
+      -o|--output) shift; (($#)) || { echo 'blisp: -o needs a path' >&2; return 2; }; out=$1 ;;
+      *) echo "blisp: unknown compile option: $1" >&2; return 2 ;;
+    esac
+    shift
+  done
+  [[ -f $file ]] || { echo "blisp: no such file: $file" >&2; return 2; }
+  [[ -n $out ]] || { if is_surface_file "$file"; then out=${file%.*}; else out=${file%.bl}; fi; }
+  local std src
+  std=$(cat "$SELF_DIR/stdlib.bl") || return
+  if is_surface_file "$file"; then
+    BL_SOURCE_CHUNKS=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=(); bl_collect_hybrid_file "$file" || return
+  else src=$(cat -- "$file") || return; fi
+  bl_runtime_init
+  if is_surface_file "$file"; then
+    bl_parse_all "$std" || return
+    local -a std_forms=("${BL_FORMS[@]}")
+    bl_parse_surface_chunks || return
+    BL_FORMS=("${std_forms[@]}" "${BL_FORMS[@]}")
+    bl_compile_forms "$out" "$SELF_DIR/runtime.sh" || return
+  else
+    bl_compile_source "$std"$'\n'"$src" "$out" "$SELF_DIR/runtime.sh" || return
+  fi
+  printf '%s\n' "$out"
+}
+
+cmd_repl() {
+  bl_runtime_init
+  load_stdlib_interpreted || return
+  local line
+  printf 'BLisp REPL. One complete form per line; Ctrl-D exits.\n'
+  while IFS= read -r -p 'blisp> ' line; do
+    [[ -z $line ]] && continue
+    if bl_interpret_source "$line" "$BL_GLOBAL_ENV"; then bl_repr "$RET"; printf '\n'; fi
+  done
+}
+
+cmd_replx() {
+  bl_runtime_init
+  load_stdlib_interpreted || return
+  local line
+  printf 'BLisp hybrid REPL. One statement/expression per line; Ctrl-D exits.\n'
+  while IFS= read -r -p 'blx> ' line; do
+    [[ -z $line ]] && continue
+    if bl_interpret_surface_source "$line" "$BL_GLOBAL_ENV"; then bl_repr "$RET"; printf '\n'; fi
+  done
+}
+
+main() {
+  (($#)) || { usage; return 2; }
+  local cmd=$1; shift
+  case $cmd in
+    run) cmd_run "$@" ;;
+    eval) cmd_eval "$@" ;;
+    evalx) cmd_evalx "$@" ;;
+    compile) cmd_compile "$@" ;;
+    repl) cmd_repl "$@" ;;
+    replx) cmd_replx "$@" ;;
+    -h|--help|help) usage ;;
+    *) echo "blisp: unknown command: $cmd" >&2; usage >&2; return 2 ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,33 @@
+include "../lib/prelude.blx";
+
+// Binary-safe file I/O, structured errors, environment access and processes.
+let path = "/tmp/blisp-systems-" + str(process.pid) + ".bin";
+let payload = b"header\x00payload\xff";
+fs.writeBytes(path, payload);
+
+let f = fs.open(path, "r");
+let prefix = f.read(7);
+let rest = f.readAll();
+f.close();
+assert(prefix.hex() == "68656164657200", "stream prefix");
+assert(rest.hex() == "7061796c6f6164ff", "stream remainder");
+
+let missing = attempt(() => fs.readBytes(path + ".missing"));
+assert(!missing.ok and missing.error.kind == :io, "structured I/O error");
+
+env.set("BLISP_SYSTEMS_DEMO", "yes");
+assert(env.get("BLISP_SYSTEMS_DEMO") == "yes", "environment");
+env.unset("BLISP_SYSTEMS_DEMO");
+
+let sync = process.run(["bash", "-c", "printf 'out'; printf 'err' >&2; exit 7"]);
+assert(sync.status == 7, "process status");
+assert(sync.stdout.decode() == "out" and sync.stderr.decode() == "err", "process capture");
+
+let child = process.spawn(["bash", "-c", "sleep 0.03; printf async; exit 3"]);
+let status = child.wait();
+let result = child.result();
+assert(status == 3 and result.status == 3 and result.stdout.decode() == "async", "async process");
+child.close();
+
+fs.remove(path);
+println("systems primitives ok");

@@ -1,0 +1,38 @@
+include "prelude.blx";
+
+// Bounded LRU cache. Policy is entirely userland: HashMap supplies lookup,
+// while a doubly-linked list supplies recency ordering.
+proto LruCache {
+  constructor(capacity) {
+    this.capacity=int(capacity); if(this.capacity<=0) throw({kind::value,message:"LRU capacity must be positive"});
+    this._map=new HashMap(); this._head=null; this._tail=null;
+  }
+  _detach(node) {
+    if(node.prev!=null) node.prev.next=node.next; else this._head=node.next;
+    if(node.next!=null) node.next.prev=node.prev; else this._tail=node.prev;
+    node.prev=null; node.next=null;
+  }
+  _front(node) {
+    node.prev=null; node.next=this._head;
+    if(this._head!=null) this._head.prev=node; else this._tail=node;
+    this._head=node;
+  }
+  _touch(node) { if(node != this._head) { this._detach(node); this._front(node); } }
+  has(key) { return this._map.has(key); }
+  get(key) { let node=this._map.get(key); if(node==null) return null; this._touch(node); return node.value; }
+  getOr(key,fallback) { let node=this._map.get(key); if(node==null) return fallback; this._touch(node); return node.value; }
+  set(key,value) {
+    let node=this._map.get(key);
+    if(node!=null) { node.value=value; this._touch(node); return this; }
+    node={key,value,prev:null,next:null}; this._map.set(key,node); this._front(node);
+    if(len(this._map)>this.capacity) { let old=this._tail; this._detach(old); this._map.delete(old.key); }
+    return this;
+  }
+  getOrPut(key,make) { if(this.has(key)) return this.get(key); let value=make(key); this.set(key,value); return value; }
+  delete(key) { let node=this._map.get(key); if(node==null)return false; this._detach(node); return this._map.delete(key); }
+  clear(){this._map.clear();this._head=null;this._tail=null;return this;}
+  entries(){let out=[];let n=this._head;while(n!=null){out.push([n.key,n.value]);n=n.next;}return out;}
+  __len__(){return len(this._map);} __iter__(){return this.entries();}
+  __str__(){return "LruCache("+str(this.entries())+")";}
+}
+const cache={LruCache, lru:fn(capacity){return new LruCache(capacity);}};

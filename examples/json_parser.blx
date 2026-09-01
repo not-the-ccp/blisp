@@ -1,0 +1,137 @@
+// A JSON parser written in the hybrid language itself.  This intentionally
+// uses no JSON host builtin: recursion, dynamic objects, arrays, strings and
+// prototype methods all belong to the language runtime.
+
+proto JsonParser {
+  init(src) {
+    this.src = src;
+    this.pos = 0;
+  }
+
+  peek() {
+    return this.src.charAt(this.pos);
+  }
+
+  take() {
+    const c = this.peek();
+    this.pos++;
+    return c;
+  }
+
+  skipWS() {
+    while (this.peek() != "" and " \n\t\r".contains(this.peek())) this.pos++;
+  }
+
+  expect(ch) {
+    const got = this.take();
+    if (got != ch) panic("json: expected " + ch + ", got " + got);
+  }
+
+  parseString() {
+    this.expect("\"");
+    let out = "";
+    loop {
+      const c = this.take();
+      if (c == "") panic("json: unterminated string");
+      if (c == "\"") break;
+      if (c == "\\") {
+        const esc = this.take();
+        out += match esc {
+          "n" => "\n";
+          "t" => "\t";
+          "r" => "\r";
+          "\"" => "\"";
+          "\\" => "\\";
+          else => esc;
+        };
+      } else {
+        out += c;
+      }
+    }
+    return out;
+  }
+
+  parseNumber() {
+    const start = this.pos;
+    if (this.peek() == "-") this.pos++;
+    let digits = 0;
+    while (this.peek() != "" and "0123456789".contains(this.peek())) {
+      this.pos++;
+      digits++;
+    }
+    if (digits == 0) panic("json: bad number");
+    return int(this.src.slice(start, this.pos));
+  }
+
+  parseArray() {
+    this.expect("[");
+    const out = [];
+    this.skipWS();
+    if (this.peek() == "]") { this.pos++; return out; }
+    loop {
+      out.push(this.parseValue());
+      this.skipWS();
+      const sep = this.take();
+      if (sep == "]") break;
+      if (sep != ",") panic("json: expected comma or ]");
+      this.skipWS();
+    }
+    return out;
+  }
+
+  parseObject() {
+    this.expect("{");
+    const out = {};
+    this.skipWS();
+    if (this.peek() == "}") { this.pos++; return out; }
+    loop {
+      if (this.peek() != "\"") panic("json: object key must be string");
+      const key = this.parseString();
+      this.skipWS();
+      this.expect(":");
+      this.skipWS();
+      out[key] = this.parseValue();
+      this.skipWS();
+      const sep = this.take();
+      if (sep == "}") break;
+      if (sep != ",") panic("json: expected comma or }");
+      this.skipWS();
+    }
+    return out;
+  }
+
+  parseValue() {
+    this.skipWS();
+    const c = this.peek();
+    return cond {
+      c == "\"" => this.parseString();
+      c == "["  => this.parseArray();
+      c == "{"  => this.parseObject();
+      c == "-" or "0123456789".contains(c) => this.parseNumber();
+      this.src.slice(this.pos, this.pos + 4) == "true" => do { this.pos += 4; true; };
+      this.src.slice(this.pos, this.pos + 5) == "false" => do { this.pos += 5; false; };
+      this.src.slice(this.pos, this.pos + 4) == "null" => do { this.pos += 4; nil; };
+      else => do { panic("json: unexpected token at " + str(this.pos)); nil; };
+    };
+  }
+
+  parse() {
+    const value = this.parseValue();
+    this.skipWS();
+    if (this.pos != this.src.length) panic("json: trailing input");
+    return value;
+  }
+}
+
+fn parseJson(text) {
+  return new JsonParser(text).parse();
+}
+
+const sample = '{"name":"Ada","nums":[3,1,4,1,5],"nested":{"ok":true,"none":null},"msg":"hello\\nworld"}';
+const doc = parseJson(sample);
+println(doc.name);
+println(doc.nums.sorted());
+println(doc.nested.ok);
+println(doc.nested.none == nil);
+println(doc.msg);
+println(doc.nums.fold((a, b) => a + b, 0));

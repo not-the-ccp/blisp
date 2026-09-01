@@ -1,0 +1,76 @@
+include "prelude.blx";
+
+fn _pathNormalize(p) {
+  if (p == "") return ".";
+  let absolute = p.startsWith("/");
+  let parts = [];
+  for (let part of p.split("/")) {
+    if (part == "" or part == ".") continue;
+    if (part == "..") {
+      if (parts.length > 0 and parts[parts.length - 1] != "..") parts.pop();
+      else if (!absolute) parts.push("..");
+    } else parts.push(part);
+  }
+  let out = parts.join("/");
+  if (absolute) out = "/" + out;
+  if (out == "") return absolute ? "/" : ".";
+  return out;
+}
+
+fn _pathJoin(...parts) {
+  let out = "";
+  for (let p of parts) {
+    if (p == "") continue;
+    if (p.startsWith("/")) out = p;
+    else if (out == "" or out.endsWith("/")) out += p;
+    else out += "/" + p;
+  }
+  return _pathNormalize(out);
+}
+
+fn _pathBase(p) {
+  let n = _pathNormalize(p);
+  if (n == "/") return "/";
+  let xs = n.split("/");
+  return xs[xs.length - 1];
+}
+
+fn _pathDir(p) {
+  let n = _pathNormalize(p);
+  if (n == "/") return "/";
+  let xs = n.split("/");
+  xs.pop();
+  let out = xs.join("/");
+  if (n.startsWith("/")) out = "/" + out;
+  return out == "" ? "." : _pathNormalize(out);
+}
+
+fn _pathExt(p) {
+  let b = _pathBase(p);
+  let dot = -1;
+  for (let i = 0; i < b.length; i++) if (b.charAt(i) == ".") dot = i;
+  if (dot <= 0) return "";
+  return b.slice(dot);
+}
+
+fn _pathStem(p) {
+  let b = _pathBase(p); let e = _pathExt(b);
+  return e == "" ? b : b.slice(0, b.length - e.length);
+}
+
+fn _pathAbsolute(p) {
+  return p.startsWith("/") ? _pathNormalize(p) : _pathJoin(fs.cwd(), p);
+}
+
+const path = {
+  normalize: _pathNormalize,
+  join: _pathJoin,
+  base: _pathBase,
+  dir: _pathDir,
+  ext: _pathExt,
+  stem: _pathStem,
+  absolute: _pathAbsolute,
+  exists: fn(p) { return fs.exists(p); },
+  isFile: fn(p) { return fs.isFile(p); },
+  isDir: fn(p) { return fs.isDir(p); }
+};

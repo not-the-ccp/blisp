@@ -1,0 +1,59 @@
+include "prelude.blx";
+
+fn _mathGcd(a, b) {
+  a = int(a); b = int(b);
+  if (a < 0) a = -a; if (b < 0) b = -b;
+  while (b != 0) { let t = a % b; a = b; b = t; }
+  return a;
+}
+fn _mathLcm(a, b) { return a == 0 or b == 0 ? 0 : Math.abs(int(a * b)) / _mathGcd(a, b); }
+fn _mathFactorial(n) {
+  n = int(n); if (n < 0) throw({kind: :value, message: "factorial requires n >= 0"});
+  let out = 1; for (let i = 2; i <= n; i++) out *= i; return out;
+}
+fn _mathChoose(n, k) {
+  n = int(n); k = int(k);
+  if (k < 0 or n < 0 or k > n) return 0;
+  if (k > n - k) k = n - k;
+  let out = 1;
+  for (let i = 1; i <= k; i++) out = out * (n - k + i) / i;
+  return out;
+}
+fn _mathPermute(n, k) {
+  n = int(n); k = int(k);
+  if (k < 0 or n < 0 or k > n) return 0;
+  let out = 1; for (let i = 0; i < k; i++) out *= n - i; return out;
+}
+fn _mathSqrt(x) {
+  x = float(x);
+  if (x < 0.0) throw({kind: :value, message: "sqrt of negative value"});
+  if (x == 0.0) return 0.0;
+  let g = x < 1.0 ? 1.0 : x;
+  for (let i = 0; i < 40; i++) g = (g + x / g) / 2.0;
+  return g;
+}
+fn _mathProduct(values) { let out = 1; for (let x of values) out *= x; return out; }
+fn _mathSum(values) { let out = 0; for (let x of values) out += x; return out; }
+fn _mathClamp(x, lo, hi) { return x < lo ? lo : (x > hi ? hi : x); }
+fn _mathIsClose(a, b, rel = 0.000000001, absTol = 0.0) {
+  let r = rel;
+  let at = absTol;
+  let d = Math.abs(a - b);
+  return d <= Math.max(at, r * Math.max(Math.abs(a), Math.abs(b)));
+}
+
+const math = {
+  abs: Math.abs,
+  min: Math.min,
+  max: Math.max,
+  gcd: _mathGcd,
+  lcm: _mathLcm,
+  factorial: _mathFactorial,
+  choose: _mathChoose,
+  permute: _mathPermute,
+  sqrt: _mathSqrt,
+  sum: _mathSum,
+  product: _mathProduct,
+  clamp: _mathClamp,
+  isClose: _mathIsClose
+};

@@ -1,0 +1,29 @@
+include "prelude.blx";
+
+fn _testFail(message) { throw({kind: :assertion, message}); }
+fn _testEqual(actual, expected, message) {
+  if (actual != expected) _testFail((message == null ? "values differ" : message) + ": expected " + repr(expected) + ", got " + repr(actual));
+  return actual;
+}
+fn _testThrows(fnValue, kind) {
+  let r = attempt(fnValue);
+  if (r.ok) _testFail("expected function to throw");
+  if (kind != null and (type(r.error) != "object" or r.error.kind != kind)) _testFail("unexpected error kind: " + repr(r.error));
+  return r.error;
+}
+proto TestSuite {
+  constructor(name) { this.name = name; this.passed = 0; this.failed = 0; this.failures = []; }
+  test(name, fnValue) {
+    let r = attempt(fnValue);
+    if (r.ok) this.passed++;
+    else { this.failed++; this.failures.push({name, error: r.error}); }
+    return this;
+  }
+  report() {
+    for (let f of this.failures) console.log("FAIL " + f.name + ": " + repr(f.error));
+    console.log(this.name + ": " + str(this.passed) + " passed, " + str(this.failed) + " failed");
+    if (this.failed > 0) throw({kind: :testFailure, failures: this.failures});
+    return this;
+  }
+}
+const testing = {suite: fn(name) { return new TestSuite(name); }, equal: _testEqual, throws: _testThrows, fail: _testFail};

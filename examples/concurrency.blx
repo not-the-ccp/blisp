@@ -1,0 +1,17 @@
+// process.spawn is intentionally primitive; scheduling policy can be userland.
+let a = process.spawn(["bash", "-c", "sleep 0.04; printf A"]);
+let b = process.spawn(["bash", "-c", "sleep 0.02; printf B"]);
+let pending = [a, b];
+let done = [];
+while (pending.length > 0) {
+  let next = [];
+  for (let p of pending) {
+    let status = p.poll();
+    if (status == null) next.push(p);
+    else { done.push(p.stdout().decode()); p.close(); }
+  }
+  pending = next;
+  if (pending.length > 0) sleepMs(5);
+}
+assert(done.length == 2 and done.includes("A") and done.includes("B"), "both children");
+println("2 workers done");

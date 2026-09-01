@@ -1,0 +1,22 @@
+include "prelude.blx";
+
+fn _checksumBytes(value) { return type(value)=="bytes" ? value : bytes(value); }
+fn _adler32(value) {
+  let data=_checksumBytes(value); let a=1; let b=0;
+  for(let x of data){a=(a+x)%65521;b=(b+a)%65521;}
+  return ((b<<16)|a) & 0xffffffff;
+}
+fn _crc32(value) {
+  let data=_checksumBytes(value); let crc=0xffffffff;
+  for(let x of data){
+    crc ^= x;
+    for(let i=0;i<8;i++) crc=(crc&1)!=0 ? ((crc>>1)^0xedb88320) : (crc>>1);
+  }
+  return (~crc)&0xffffffff;
+}
+fn _hex32(x) {
+  let digits="0123456789abcdef"; let out=""; x=x&0xffffffff;
+  for(let shift=28;shift>=0;shift-=4) out += digits.charAt((x>>shift)&15);
+  return out;
+}
+const checksum={adler32:_adler32,crc32:_crc32,hex32:_hex32};

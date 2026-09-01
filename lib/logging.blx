@@ -1,0 +1,28 @@
+include "json.blx";
+
+fn _logLevelNum(level) {
+  if (level == :debug or level == "debug") return 10;
+  if (level == :info or level == "info") return 20;
+  if (level == :warn or level == "warn") return 30;
+  if (level == :error or level == "error") return 40;
+  throw({kind::logging,message:"unknown log level",level});
+}
+proto Logger {
+  constructor(name, level, stream) { this.name=name; this.level=level; this.stream=stream; }
+  enabled(level) { return _logLevelNum(level) >= _logLevelNum(this.level); }
+  log(level, message, ...rest) {
+    if (!this.enabled(level)) return false;
+    let xs=toArray(rest); let fields=xs.length?xs[0]:null;
+    let line=str(clockMs())+" "+str(level).upper()+" "+this.name+" "+message;
+    if (fields != null) line += " " + json.stringify(fields);
+    this.stream.write(line+"\n"); return true;
+  }
+  debug(message,...rest){let x=toArray(rest);return this.log(:debug,message,...x);}
+  info(message,...rest){let x=toArray(rest);return this.log(:info,message,...x);}
+  warn(message,...rest){let x=toArray(rest);return this.log(:warn,message,...x);}
+  error(message,...rest){let x=toArray(rest);return this.log(:error,message,...x);}
+}
+const logging={
+  logger: fn(name,...rest){let x=toArray(rest);return new Logger(name,x.length>0?x[0]::info,x.length>1?x[1]:io.stderr);},
+  levels:{debug:10,info:20,warn:30,error:40}
+};

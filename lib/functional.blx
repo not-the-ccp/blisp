@@ -1,0 +1,67 @@
+include "prelude.blx";
+
+fn _fnIdentity(x) { return x; }
+fn _fnConst(x) { return fn(...ignored) { return x; }; }
+fn _fnCompose(...rest) {
+  let fs = toArray(rest);
+  return fn(x) {
+    let out = x;
+    for (let i = fs.length - 1; i >= 0; i--) out = fs[i](out);
+    return out;
+  };
+}
+fn _fnPipe(...rest) {
+  let fs = toArray(rest);
+  return fn(x) { let out = x; for (let f of fs) out = f(out); return out; };
+}
+fn _fnPartial(f, ...rest) {
+  let prefix = toArray(rest);
+  return fn(...tail) { return f(...prefix, ...toArray(tail)); };
+}
+fn _fnOnce(f) {
+  let called = false; let value = null;
+  return fn(...argsList) {
+    if (!called) { value = f(...toArray(argsList)); called = true; }
+    return value;
+  };
+}
+fn _fnMemoize(f, keyFn) {
+  let cache = new HashMap();
+  return fn(...argsList) {
+    let argsArray = toArray(argsList);
+    let key = keyFn == null ? argsArray : keyFn(...argsArray);
+    if (cache.has(key)) return cache.get(key);
+    let value = f(...argsArray); cache.set(key, value); return value;
+  };
+}
+fn _fnWith(resource, body) {
+  let r = attempt(() => body(resource));
+  let c = attempt(() => resource.close());
+  if (!r.ok) throw(r.error);
+  if (!c.ok) throw(c.error);
+  return r.value;
+}
+fn _fnRetry(body, attempts, delayMs) {
+  let n = attempts == null ? 3 : attempts;
+  let delay = delayMs == null ? 0 : delayMs;
+  let last = null;
+  for (let i = 0; i < n; i++) {
+    let r = attempt(body);
+    if (r.ok) return r.value;
+    last = r.error;
+    if (delay > 0 and i + 1 < n) sleepMs(delay);
+  }
+  throw(last);
+}
+
+const functional = {
+  identity: _fnIdentity,
+  constant: _fnConst,
+  compose: _fnCompose,
+  pipe: _fnPipe,
+  partial: _fnPartial,
+  once: _fnOnce,
+  memoize: fn(f, ...rest) { let xs=toArray(rest); return _fnMemoize(f, xs.length ? xs[0] : null); },
+  withResource: _fnWith,
+  retry: fn(body, ...rest) { let xs=toArray(rest); return _fnRetry(body, xs.length>0?xs[0]:null, xs.length>1?xs[1]:null); }
+};

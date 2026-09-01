@@ -1,0 +1,36 @@
+// Batteries-included standard library entry point. Includes are de-duplicated
+// by the BLisp loader, so modules can also be included individually.
+include "prelude.blx";
+include "collections.blx";
+include "seq.blx";
+include "text.blx";
+include "path.blx";
+include "math.blx";
+include "stats.blx";
+include "json.blx";
+include "csv.blx";
+include "uri.blx";
+include "base64.blx";
+include "functional.blx";
+include "search.blx";
+include "random.blx";
+include "binary.blx";
+include "temp.blx";
+include "files.blx";
+include "uuid.blx";
+include "ini.blx";
+include "regex.blx";
+include "encoding.blx";
+include "glob.blx";
+include "logging.blx";
+include "http.blx";
+include "cli.blx";
+include "cache.blx";
+include "checksum.blx";
+include "events.blx";
+include "fraction.blx";
+include "graph.blx";
+include "io.blx";
+include "prng.blx";
+include "url.blx";
+include "testing.blx";

@@ -1,0 +1,25 @@
+include "../lib/prelude.blx";
+
+proto Point {
+  constructor(x, y) { this.x = x; this.y = y; }
+  __str__() { return "Point(" + str(this.x) + ", " + str(this.y) + ")"; }
+  __len__() { return 2; }
+  __iter__() { return [this.x, this.y]; }
+  __call__(scale) { return new Point(this.x * scale, this.y * scale); }
+  __add__(other) { return new Point(this.x + other.x, this.y + other.y); }
+  __eq__(other) { return other instanceof Point and this.x == other.x and this.y == other.y; }
+  __hash__() { return (this.x * 1000003) ^ this.y; }
+}
+
+let p = new Point(3, 4);
+let q = new Point(10, 20);
+let r = p + q;
+assert(str(r) == "Point(13, 24)", "operator protocol");
+assert(len(p) == 2 and toArray(p) == [3, 4], "collection protocols");
+assert(str(p(3)) == "Point(9, 12)", "callable object");
+
+let map = new HashMap();
+map.set(new Point(3, 4), "same logical key");
+assert(map.get(p) == "same logical key", "hash/equality protocols");
+
+println(str(r), map.get(p));

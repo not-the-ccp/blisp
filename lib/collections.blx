@@ -1,0 +1,165 @@
+include "prelude.blx";
+
+// General-purpose containers. HashMap/Set live in prelude because many other
+// modules need them; the structures here are higher-level policy.
+
+proto Deque {
+  constructor(values) {
+    this._front = [];
+    this._back = [];
+    if (values != null) for (let x of values) this.pushBack(x);
+  }
+
+  _rebalanceFront() {
+    if (this._front.length == 0 and this._back.length > 0) {
+      this._front = this._back.reversed();
+      this._back = [];
+    }
+  }
+
+  _rebalanceBack() {
+    if (this._back.length == 0 and this._front.length > 0) {
+      this._back = this._front.reversed();
+      this._front = [];
+    }
+  }
+
+  pushFront(x) { this._front.push(x); return this; }
+  pushBack(x) { this._back.push(x); return this; }
+
+  popFront() {
+    this._rebalanceFront();
+    return this._front.length == 0 ? null : this._front.pop();
+  }
+
+  popBack() {
+    this._rebalanceBack();
+    return this._back.length == 0 ? null : this._back.pop();
+  }
+
+  peekFront() {
+    this._rebalanceFront();
+    return this._front.length == 0 ? null : this._front[this._front.length - 1];
+  }
+
+  peekBack() {
+    this._rebalanceBack();
+    return this._back.length == 0 ? null : this._back[this._back.length - 1];
+  }
+
+  clear() { this._front = []; this._back = []; return this; }
+  __len__() { return this._front.length + this._back.length; }
+  __iter__() { return this._front.reversed().concat(this._back); }
+  __str__() { return "Deque(" + str(toArray(this)) + ")"; }
+}
+
+fn _heapLess(a, b) { return a < b; }
+
+proto Heap {
+  constructor(values, less) {
+    this._data = [];
+    this._less = less == null ? _heapLess : less;
+    if (values != null) for (let x of values) this.push(x);
+  }
+
+  push(x) {
+    this._data.push(x);
+    let i = this._data.length - 1;
+    while (i > 0) {
+      let p = (i - 1) / 2;
+      if (!this._less(this._data[i], this._data[p])) break;
+      let t = this._data[i]; this._data[i] = this._data[p]; this._data[p] = t;
+      i = p;
+    }
+    return this;
+  }
+
+  peek() { return this._data.length == 0 ? null : this._data[0]; }
+
+  pop() {
+    if (this._data.length == 0) return null;
+    let out = this._data[0];
+    let last = this._data.pop();
+    if (this._data.length > 0) {
+      this._data[0] = last;
+      let i = 0;
+      loop {
+        let l = i * 2 + 1;
+        let r = l + 1;
+        if (l >= this._data.length) break;
+        let best = l;
+        if (r < this._data.length and this._less(this._data[r], this._data[l])) best = r;
+        if (!this._less(this._data[best], this._data[i])) break;
+        let t = this._data[i]; this._data[i] = this._data[best]; this._data[best] = t;
+        i = best;
+      }
+    }
+    return out;
+  }
+
+  clear() { this._data = []; return this; }
+  __len__() { return this._data.length; }
+  __iter__() { return this._data; }
+  __str__() { return "Heap(" + str(this._data) + ")"; }
+}
+
+proto Counter {
+  constructor(values) {
+    this._counts = new HashMap();
+    if (values != null) this.update(values);
+  }
+
+  add(key, amount) {
+    let n = amount == null ? 1 : amount;
+    this._counts.set(key, this._counts.getOr(key, 0) + n);
+    return this;
+  }
+
+  update(values) { for (let x of values) this.add(x, 1); return this; }
+  get(key) { return this._counts.getOr(key, 0); }
+  has(key) { return this._counts.has(key); }
+  delete(key) { return this._counts.delete(key); }
+  entries() { return this._counts.entries(); }
+
+  mostCommon(n) {
+    let xs = this.entries();
+    // Insertion sort allows a custom comparison without making sorting a core primitive.
+    for (let i = 1; i < xs.length; i++) {
+      let x = xs[i]; let j = i - 1;
+      while (j >= 0 and xs[j][1] < x[1]) { xs[j + 1] = xs[j]; j--; }
+      xs[j + 1] = x;
+    }
+    return n == null ? xs : xs.slice(0, n);
+  }
+
+  __len__() { return len(this._counts); }
+  __iter__() { return this._counts.entries(); }
+  __str__() { return "Counter(" + str(this.entries()) + ")"; }
+}
+
+proto MultiMap {
+  constructor() { this._map = new HashMap(); }
+  add(key, value) {
+    let bucket = this._map.get(key);
+    if (bucket == null) { bucket = []; this._map.set(key, bucket); }
+    bucket.push(value);
+    return this;
+  }
+  get(key) { let xs = this._map.get(key); return xs == null ? [] : xs.slice(0); }
+  has(key) { return this._map.has(key); }
+  delete(key) { return this._map.delete(key); }
+  keys() { return this._map.keys(); }
+  entries() { return this._map.entries(); }
+  __len__() { return len(this._map); }
+  __iter__() { return this._map.entries(); }
+}
+
+const collections = {
+  Deque,
+  Heap,
+  Counter,
+  MultiMap,
+  HashMap,
+  Set,
+  Queue
+};

@@ -1,0 +1,25 @@
+include "files.blx";
+
+fn _globMatchAt(pattern, value, pi, vi) {
+  if (pi >= pattern.length) return vi >= value.length;
+  let p = pattern.charAt(pi);
+  if (p == "*") {
+    while (pi + 1 < pattern.length and pattern.charAt(pi + 1) == "*") pi++;
+    if (pi + 1 >= pattern.length) return true;
+    for (let k = vi; k <= value.length; k++) if (_globMatchAt(pattern, value, pi + 1, k)) return true;
+    return false;
+  }
+  if (vi >= value.length) return false;
+  if (p == "?") return _globMatchAt(pattern, value, pi + 1, vi + 1);
+  return p == value.charAt(vi) and _globMatchAt(pattern, value, pi + 1, vi + 1);
+}
+fn _globMatch(pattern, value) { return _globMatchAt(pattern, value, 0, 0); }
+fn _globFind(root, pattern) {
+  let out=[]; let prefix=path.normalize(root);
+  for (let p of files.walk(prefix)) {
+    let rel = p == prefix ? "." : p.slice(prefix.length + (prefix.endsWith("/") ? 0 : 1));
+    if (_globMatch(pattern, rel)) out.push(p);
+  }
+  return out;
+}
+const glob={match:_globMatch, find:_globFind};

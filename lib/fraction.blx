@@ -1,0 +1,33 @@
+include "math.blx";
+
+fn _ratCoerce(x) {
+  if (x instanceof Rational) return x;
+  if (type(x)=="int") return new Rational(x,1);
+  throw({kind: :type, message: "expected Rational or integer", value:x});
+}
+proto Rational {
+  constructor(numerator, denominator) {
+    let n=int(numerator); let d=int(denominator);
+    if(d==0) throw({kind::zeroDivision,message:"rational denominator is zero"});
+    if(d<0){n=-n;d=-d;}
+    let g=math.gcd(n,d); this.n=n/g; this.d=d/g;
+  }
+  __add__(other){let r=_ratCoerce(other);return new Rational(this.n*r.d+r.n*this.d,this.d*r.d);}
+  __radd__(other){return this.__add__(other);}
+  __sub__(other){let r=_ratCoerce(other);return new Rational(this.n*r.d-r.n*this.d,this.d*r.d);}
+  __rsub__(other){let r=_ratCoerce(other);return r.__sub__(this);}
+  __mul__(other){let r=_ratCoerce(other);return new Rational(this.n*r.n,this.d*r.d);}
+  __rmul__(other){return this.__mul__(other);}
+  __div__(other){let r=_ratCoerce(other);if(r.n==0)throw({kind::zeroDivision,message:"division by zero"});return new Rational(this.n*r.d,this.d*r.n);}
+  __rdiv__(other){let r=_ratCoerce(other);return r.__div__(this);}
+  __lt__(other){let r=_ratCoerce(other);return this.n*r.d<r.n*this.d;}
+  __le__(other){let r=_ratCoerce(other);return this.n*r.d<=r.n*this.d;}
+  __gt__(other){let r=_ratCoerce(other);return this.n*r.d>r.n*this.d;}
+  __ge__(other){let r=_ratCoerce(other);return this.n*r.d>=r.n*this.d;}
+  __eq__(other){if(!(other instanceof Rational))return false;return this.n==other.n and this.d==other.d;}
+  __hash__(){return hash([this.n,this.d]);}
+  __str__(){return this.d==1?str(this.n):str(this.n)+"/"+str(this.d);}
+  float(){return float(this.n)/float(this.d);}
+  inverse(){if(this.n==0)throw({kind::zeroDivision,message:"zero has no reciprocal"});return new Rational(this.d,this.n);}
+}
+const fraction={Rational, make:fn(n,d){return new Rational(n,d);}};

@@ -1,0 +1,35 @@
+include "prelude.blx";
+
+proto BinaryWriter {
+  constructor() { this.data = bytes(); }
+  u8(x) { this.data.push(x & 255); return this; }
+  i8(x) { return this.u8(x); }
+  u16be(x) { return this.u8(x >> 8).u8(x); }
+  u16le(x) { return this.u8(x).u8(x >> 8); }
+  u32be(x) { return this.u8(x >> 24).u8(x >> 16).u8(x >> 8).u8(x); }
+  u32le(x) { return this.u8(x).u8(x >> 8).u8(x >> 16).u8(x >> 24); }
+  varuint(x) {
+    if (x < 0) throw({kind: :value, message: "varuint requires nonnegative integer"});
+    loop { let b = x & 127; x = x >> 7; if (x != 0) b |= 128; this.u8(b); if (x == 0) break; }
+    return this;
+  }
+  bytes(value) { for (let b of value) this.data.push(b); return this; }
+  utf8(s) { return this.bytes(bytes(s)); }
+  finish() { return bytes(this.data); }
+}
+
+proto BinaryReader {
+  constructor(data) { this.data = data; this.pos = 0; }
+  remaining() { return this.data.length - this.pos; }
+  _need(n) { if (this.remaining() < n) throw({kind: :eof, need:n, remaining:this.remaining()}); }
+  u8() { this._need(1); let x=this.data[this.pos]; this.pos++; return x; }
+  i8() { let x=this.u8(); return x >= 128 ? x - 256 : x; }
+  u16be() { return (this.u8()<<8) | this.u8(); }
+  u16le() { let a=this.u8(); return a | (this.u8()<<8); }
+  u32be() { return (this.u8()<<24) | (this.u8()<<16) | (this.u8()<<8) | this.u8(); }
+  u32le() { let a=this.u8(); let b=this.u8(); let c=this.u8(); let d=this.u8(); return a | (b<<8) | (c<<16) | (d<<24); }
+  varuint() { let out=0; let shift=0; loop { let b=this.u8(); out |= (b & 127) << shift; if ((b & 128)==0) return out; shift += 7; if (shift > 63) throw({kind::value,message:"varuint too large"}); } }
+  take(n) { this._need(n); let out=this.data.slice(this.pos,this.pos+n); this.pos+=n; return out; }
+  utf8(n) { return this.take(n).decode(); }
+}
+const binary = {Writer: BinaryWriter, Reader: BinaryReader};

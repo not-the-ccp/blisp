@@ -1,0 +1,5 @@
+include "base64.blx";
+const _ENC_HEX="0123456789abcdef";
+fn _hexDigit(c){let x=c.lower();for(let i=0;i<16;i++)if(_ENC_HEX.charAt(i)==x)return i;throw({kind::hex,message:"invalid hex digit"});}
+fn _hexDecode(s){if(s.length%2!=0)throw({kind::hex,message:"hex text must have even length"});let out=bytes();for(let i=0;i<s.length;i+=2)out.push((_hexDigit(s.charAt(i))<<4)|_hexDigit(s.charAt(i+1)));return out;}
+const encoding={base64,hex:{encode:fn(data){return bytes(data).hex();},decode:_hexDecode}};

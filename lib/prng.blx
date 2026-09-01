@@ -1,0 +1,17 @@
+include "prelude.blx";
+
+// Explicit deterministic PRNG for simulation/testing. This is deliberately
+// separate from random.blx, whose API uses the OS cryptographic random source.
+proto Prng {
+  constructor(seed) { this.state=int(seed)&0xffffffff; if(this.state==0)this.state=0x6d2b79f5; }
+  u32(){let x=this.state;x^=(x<<13)&0xffffffff;x^=x>>17;x^=(x<<5)&0xffffffff;this.state=x&0xffffffff;return this.state;}
+  unit(){return float(this.u32())/4294967296.0;}
+  int(lo,hi){
+    lo=int(lo);hi=int(hi);if(hi<=lo)throw({kind::value,message:"prng.int requires hi > lo"});
+    let span=hi-lo;let limit=4294967296-(4294967296%span);
+    loop{let x=this.u32();if(x<limit)return lo+(x%span);}
+  }
+  choice(values){let xs=toArray(values);if(xs.length==0)throw({kind::empty,message:"choice from empty sequence"});return xs[this.int(0,xs.length)];}
+  shuffle(values){let xs=toArray(values);for(let i=xs.length-1;i>0;i--){let j=this.int(0,i+1);let t=xs[i];xs[i]=xs[j];xs[j]=t;}return xs;}
+}
+const prng={Prng, fromSeed:fn(seed){return new Prng(seed);}};

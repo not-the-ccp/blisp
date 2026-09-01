@@ -1,0 +1,20 @@
+include "path.blx";
+include "random.blx";
+
+fn _tempToken() { return randomBytes(12).hex(); }
+fn _tempRoot() { return env.get("TMPDIR", "/tmp"); }
+fn _tempDir(prefix) {
+  let p = prefix == null ? "blisp-" : prefix;
+  for (let i=0;i<100;i++) { let candidate=path.join(_tempRoot(), p + _tempToken()); if (!fs.exists(candidate)) { fs.mkdir(candidate,false); return candidate; } }
+  throw({kind::io,message:"unable to allocate temporary directory"});
+}
+fn _tempFile(prefix) {
+  let p = prefix == null ? "blisp-" : prefix;
+  for (let i=0;i<100;i++) { let candidate=path.join(_tempRoot(), p + _tempToken()); if (!fs.exists(candidate)) { fs.writeBytes(candidate,bytes()); return candidate; } }
+  throw({kind::io,message:"unable to allocate temporary file"});
+}
+const temp = {
+  root: _tempRoot,
+  dir: fn(...rest){let x=toArray(rest);return _tempDir(x.length?x[0]:null);},
+  file: fn(...rest){let x=toArray(rest);return _tempFile(x.length?x[0]:null);}
+};

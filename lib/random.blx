@@ -1,0 +1,33 @@
+include "prelude.blx";
+
+fn _randomU32() {
+  let b = randomBytes(4);
+  return ((b[0] << 24) | (b[1] << 16) | (b[2] << 8) | b[3]) & 0x7fffffff;
+}
+fn _randomInt(lo, hi) {
+  if (hi <= lo) throw({kind: :value, message: "random.int requires hi > lo"});
+  let span = hi - lo;
+  let limit = 2147483648 - (2147483648 % span);
+  loop { let x = _randomU32(); if (x < limit) return lo + (x % span); }
+}
+fn _randomChoice(values) {
+  let xs = toArray(values); if (xs.length == 0) throw({kind: :empty, message: "choice from empty sequence"});
+  return xs[_randomInt(0, xs.length)];
+}
+fn _randomShuffle(values) {
+  let xs = toArray(values);
+  for (let i = xs.length - 1; i > 0; i--) { let j = _randomInt(0, i + 1); let t=xs[i]; xs[i]=xs[j]; xs[j]=t; }
+  return xs;
+}
+fn _randomSample(values, n) {
+  let xs = _randomShuffle(values);
+  if (n < 0 or n > xs.length) throw({kind: :value, message: "sample size out of range"});
+  return xs.slice(0, n);
+}
+const random = {
+  bytes: randomBytes,
+  int: _randomInt,
+  choice: _randomChoice,
+  shuffle: _randomShuffle,
+  sample: _randomSample
+};

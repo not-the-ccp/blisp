@@ -1,0 +1,43 @@
+include "collections.blx";
+
+proto Graph {
+  constructor(directed) { this.directed=directed==null?false:directed; this._adj=new HashMap(); }
+  addNode(node){if(!this._adj.has(node))this._adj.set(node,[]);return this;}
+  addEdge(a,b,weight){let w=weight==null?1:weight;if(w<0)throw({kind::value,message:"negative edge weight is not supported by dijkstra"});this.addNode(a).addNode(b);this._adj.get(a).push([b,w]);if(!this.directed)this._adj.get(b).push([a,w]);return this;}
+  has(node){return this._adj.has(node);}
+  neighbors(node){let xs=this._adj.get(node);return xs==null?[]:xs.slice(0);}
+  nodes(){return this._adj.keys();}
+  edges(){let out=[];for(let a of this.nodes())for(let e of this._adj.get(a))out.push([a,e[0],e[1]]);return out;}
+  bfs(start){
+    if(!this.has(start))return [];
+    let seen=new Set([start]);let q=new Queue();q.push(start);let out=[];
+    while(!q.empty()){let n=q.pop();out.push(n);for(let e of this.neighbors(n)){let v=e[0];if(!seen.has(v)){seen.add(v);q.push(v);}}}
+    return out;
+  }
+  dfs(start){
+    if(!this.has(start))return [];
+    let seen=new Set();let stack=[start];let out=[];
+    while(stack.length){let n=stack.pop();if(seen.has(n))continue;seen.add(n);out.push(n);let ns=this.neighbors(n);for(let i=ns.length-1;i>=0;i--)if(!seen.has(ns[i][0]))stack.push(ns[i][0]);}
+    return out;
+  }
+  shortestPath(start,goal){
+    if(!this.has(start) or !this.has(goal))return null;
+    let dist=new HashMap();let prev=new HashMap();let heap=new Heap(null,(a,b)=>a[0]<b[0]);
+    dist.set(start,0);heap.push([0,start]);
+    while(len(heap)>0){
+      let item=heap.pop();let d=item[0];let u=item[1];
+      if(d!=dist.get(u))continue;
+      if(u==goal)break;
+      for(let edge of this.neighbors(u)){
+        let v=edge[0];let nd=d+edge[1];let old=dist.get(v);
+        if(old==null or nd<old){dist.set(v,nd);prev.set(v,u);heap.push([nd,v]);}
+      }
+    }
+    if(!dist.has(goal))return null;
+    let path=[];let cur=goal;
+    loop{path.push(cur);if(cur==start)break;cur=prev.get(cur);}
+    return {distance:dist.get(goal),path:path.reversed()};
+  }
+  __len__(){return len(this._adj);} __iter__(){return this.nodes();}
+}
+const graph={Graph, undirected:fn(){return new Graph(false);}, directed:fn(){return new Graph(true);}};
