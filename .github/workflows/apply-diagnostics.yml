@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - '.sync/diagnostics.patch.xz.b64'
+      - '.sync/apply-diagnostics.py'
       - '.github/workflows/apply-diagnostics.yml'
 
 permissions:
@@ -18,9 +18,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Apply diagnostics checkpoint
         run: |
-          base64 -d .sync/diagnostics.patch.xz.b64 | xz -d > /tmp/diagnostics.patch
-          echo '4cd20b8635bc110c49b406de656fe68d964a48ce542c7b6b0a4540ac93d9db31  /tmp/diagnostics.patch' | sha256sum -c -
-          git apply /tmp/diagnostics.patch
+          python3 .sync/apply-diagnostics.py
+          bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
+          bash tests/diagnostics.sh
           rm -rf .sync .github/workflows/apply-diagnostics.yml
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
