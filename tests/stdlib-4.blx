@@ -1,0 +1,34 @@
+include "../lib/testing.blx";
+include "../lib/regex.blx";
+include "../lib/uuid.blx";
+include "../lib/random.blx";
+include "../lib/cli.blx";
+include "../lib/temp.blx";
+include "../lib/files.blx";
+include "../lib/glob.blx";
+include "../lib/logging.blx";
+include "../lib/path.blx";
+
+let t = testing.suite("stdlib-4");
+
+t.test("regex", fn() { let m=regex.match("([a-z]+)-([0-9]+)","abc-123"); testing.equal(m.groups,["abc","123"],null); testing.equal(regex.test("z+","abc"),false,null); });
+
+t.test("uuid", fn() { let u=uuid.v4(); testing.equal(regex.test("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",u),true,null); });
+
+t.test("random range", fn() { for(let i=0;i<32;i++){let x=random.int(10,20); if(x<10 or x>=20) testing.fail("random.int out of range");} });
+
+t.test("cli", fn() {
+  let spec={verbose:{short:"v",type::bool,default:false},count:{short:"n",type::int,default:0}};
+  let p=cli.parse(["-v","--count=3","file"],spec); testing.equal(p.options.verbose,true,null); testing.equal(p.options.count,3,null); testing.equal(p.positionals,["file"],null);
+});
+
+t.test("temp/files/glob/logging", fn() {
+  let d=temp.dir("blisp-test-");
+  let logPath=path.join(d,"app.log"); let f=fs.open(logPath,"w"); let logger=logging.logger("test",:info,f); logger.info("hello",{x:1}); f.close();
+  let a=path.join(d,"a.txt"); fs.writeText(a,"abc"); fs.mkdir(path.join(d,"sub"),false); let b=path.join(d,"sub","b.txt"); fs.writeText(b,"xyz");
+  testing.equal(glob.find(d,"*.txt").map(path.base).sorted(),["a.txt","b.txt"],null);
+  testing.equal(fs.readText(logPath).contains("hello"),true,null);
+  fs.remove(d,true);
+});
+
+t.report();
