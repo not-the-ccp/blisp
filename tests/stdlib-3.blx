@@ -1,0 +1,27 @@
+include "../lib/testing.blx";
+include "../lib/base64.blx";
+include "../lib/encoding.blx";
+include "../lib/binary.blx";
+include "../lib/functional.blx";
+include "../lib/search.blx";
+include "../lib/ini.blx";
+
+let t = testing.suite("stdlib-3");
+
+t.test("base64/hex", fn() {
+  let raw=b"hello\x00\xff"; testing.equal(base64.decode(base64.encode(raw)),raw,null);
+  testing.equal(encoding.hex.decode(encoding.hex.encode(raw)),raw,null);
+});
+
+t.test("binary", fn() {
+  let w=new BinaryWriter(); w.u16be(0x1234).u16le(0x5678).varuint(300).utf8("ok");
+  let r=new BinaryReader(w.finish()); testing.equal([r.u16be(),r.u16le(),r.varuint(),r.utf8(2)],[4660,22136,300,"ok"],null);
+});
+
+t.test("functional", fn() { let f=functional.pipe(x=>x+1,x=>x*3); testing.equal(f(4),15,null); let once=functional.once(()=>42); testing.equal([once(),once()],[42,42],null); });
+
+t.test("bisect", fn() { let xs=[1,3,5,7]; testing.equal(search.bisectLeft(xs,4),2,null); search.insortRight(xs,5); testing.equal(xs,[1,3,5,5,7],null); });
+
+t.test("ini", fn() { let d=ini.parse("root=yes\n[db]\nhost=localhost\n"); testing.equal(d.root,"yes",null); testing.equal(d.db.host,"localhost",null); });
+
+t.report();
