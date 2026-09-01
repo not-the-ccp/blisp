@@ -1,0 +1,110 @@
+include "../lib/testing.blx";
+
+let t = testing.suite("hashability");
+
+fn _numericContract() {
+  testing.equal(4 == 4.0, true, null);
+  testing.equal(hash(4), hash(4.0), null);
+}
+t.test("numeric equality and hashes agree", _numericContract);
+
+fn _mutableStructuralValuesRejected() {
+  let a = attempt(() => hash([1, 2]));
+  testing.equal(a.ok, false, null);
+  testing.equal(a.error.kind, :unhashable, null);
+
+  let b = attempt(() => hash(b"\x01\x02"));
+  testing.equal(b.ok, false, null);
+  testing.equal(b.error.kind, :unhashable, null);
+}
+t.test("mutable structural values are unhashable", _mutableStructuralValuesRejected);
+
+fn _immutableListStructuralHash() {
+  let a = (list 1 2 3);
+  let b = (list 1 2 3);
+  testing.equal(a == b, true, null);
+  testing.equal(hash(a), hash(b), null);
+
+  let m = new HashMap();
+  m.set(a, "ok");
+  testing.equal(m.get(b), "ok", null);
+}
+t.test("immutable lists support structural hash keys", _immutableListStructuralHash);
+
+proto EqOnlyKey {
+  init(v) { this.v = v; }
+  __eq__(other) { return other instanceof EqOnlyKey and this.v == other.v; }
+}
+
+fn _eqWithoutHashRejected() {
+  let r = attempt(() => hash(new EqOnlyKey(4)));
+  testing.equal(r.ok, false, null);
+  testing.equal(r.error.kind, :unhashable, null);
+
+  let m = new HashMap();
+  let inserted = attempt(() => m.set(new EqOnlyKey(4), "bad"));
+  testing.equal(inserted.ok, false, null);
+  testing.equal(inserted.error.kind, :unhashable, null);
+}
+t.test("custom equality requires custom hashing", _eqWithoutHashRejected);
+
+proto ValueKey {
+  init(v) { this.v = v; }
+  __eq__(other) { return other instanceof ValueKey and this.v == other.v; }
+  __hash__() { return hash(this.v); }
+}
+
+fn _customValueKeys() {
+  let a = new ValueKey("alpha");
+  let b = new ValueKey("alpha");
+  testing.equal(a == b, true, null);
+  testing.equal(hash(a), hash(b), null);
+
+  let m = new HashMap();
+  m.set(a, 42);
+  testing.equal(m.get(b), 42, null);
+}
+t.test("compatible __eq__/__hash__ supports value keys", _customValueKeys);
+
+fn _identityObjectHashStable() {
+  let o = {x: 1};
+  let h = hash(o);
+  o.x = 999;
+  o.more = [1, 2, 3];
+  testing.equal(hash(o), h, null);
+
+  let m = new HashMap();
+  m.set(o, "still here");
+  o.x = 1000;
+  testing.equal(m.get(o), "still here", null);
+}
+t.test("identity-hashed objects survive ordinary mutation", _identityObjectHashStable);
+
+
+// Equality itself must terminate on cyclic mutable structures even though such
+// values are deliberately not hashable. Cyclic arrays use structural
+// bisimulation: equal recursive unfoldings compare equal.
+fn _cyclicStructuralEquality() {
+  let a = [];
+  a.push(a);
+  let b = [];
+  b.push(b);
+  testing.equal(a == b, true, null);
+
+  let c = [1];
+  c.push(c);
+  let d = [2];
+  d.push(d);
+  testing.equal(c == d, false, null);
+
+  let e = [1];
+  e.push(e);
+  let f = [1];
+  let f2 = [1];
+  f.push(f2);
+  f2.push(f);
+  testing.equal(e == f, true, null);
+}
+t.test("cyclic structural equality terminates", _cyclicStructuralEquality);
+
+t.report();

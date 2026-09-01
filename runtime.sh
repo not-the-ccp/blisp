@@ -1049,39 +1049,79 @@ bl_bytes_read_path() {
 bl_builtin_read_bytes() { bl_expect_arity $# 1 readBytes || return; bl_string_value "$1" || return; local path=$RET; bl_bytes_read_path "$path" || bl_raise_error io "cannot read bytes: $path"; }
 bl_builtin_write_bytes() { bl_expect_arity $# 2 writeBytes || return; bl_string_value "$1" || return; local path=$RET; [[ ${BL_TYPE[$2]-} == bytes ]] || { echo 'BLisp: writeBytes expects bytes' >&2; return 1; }; bl_bytes_write_path "$2" "$path" || { bl_raise_error io "cannot write bytes: $path"; return; }; RET=nil; }
 
-# Stable-ish language hash primitive. Primitive/structural values hash by
-# content; object-like values hash by identity unless they provide __hash__().
-# HashMap itself remains userland code.
+# Language hash primitive.
+#
+# Contract:
+#   * a == b  =>  hash(a) == hash(b) for all hashable values;
+#   * values whose structural equality can change through ordinary mutation are
+#     not hashable (arrays and mutable bytes);
+#   * immutable cons/list structure is structurally hashable;
+#   * object-like values use stable identity hashing unless they opt into
+#     semantic equality with __eq__; defining __eq__ without __hash__ makes the
+#     value unhashable, matching the invariant rather than silently mixing
+#     semantic equality with identity hashing.
+#
+# User-defined __hash__ is trusted to be stable and compatible with __eq__. A
+# program that mutates state consulted by its own __hash__ violates that
+# protocol contract, just as a mutable hash key would in other languages.
 bl_hash_text() {
   local text=$1 h=1469598103934665603 i ord; local LC_ALL=C
   for ((i=0;i<${#text};++i)); do printf -v ord '%d' "'${text:i:1}"; (( h ^= ord, h *= 1099511628211 )) || true; done
   BL_HASH=$h
 }
 BL_HASH=0
+
+bl_unhashable() {
+  local why=$1
+  bl_raise_error unhashable "$why"
+}
+
 bl_hash_value() {
-  local v=$1 h i n fn hv
+  local v=$1 h i n fn eqfn hv
   case $v in nil) BL_HASH=0; return;; false) BL_HASH=1; return;; true) BL_HASH=2; return;; esac
   case ${BL_TYPE[$v]-} in
     int) BL_HASH=${BL_A[$v]} ;;
     float)
-      # Equality-compatible numeric hashing: 4 and 4.0 must hash alike if
-      # HashMap is to obey its own equality contract.
+      # Equality-compatible numeric hashing: 4 and 4.0 hash alike because they
+      # are equal in BLisp's numeric equality domain.
       local __norm
       __norm=$(awk -v x="${BL_A[$v]}" 'BEGIN{if(x==int(x)) printf "%.0f",x; else printf "%.17g",x}') || return
       if [[ $__norm =~ ^-?[0-9]+$ ]]; then BL_HASH=$__norm; else bl_hash_text "f:$__norm"; fi ;;
     string) bl_hash_text "s:${BL_A[$v]}" ;;
     symbol) bl_hash_text "y:${BL_A[$v]}" ;;
     bytes)
-      h=1469598103934665603; n=${BL_BYTES_LEN[$v]-0}; for ((i=0;i<n;++i)); do (( h ^= BL_BYTE_AT["$v|$i"], h *= 1099511628211 )) || true; done; BL_HASH=$h ;;
+      bl_unhashable 'mutable bytes values are not hashable'; return ;;
     array)
-      h=7809847782465536322; n=${BL_ARR_LEN[$v]-0}; for ((i=0;i<n;++i)); do bl_prop_get_key "$v" "$i"; bl_hash_value "$RET" || return; hv=$BL_HASH; (( h ^= hv, h *= 1099511628211 )) || true; done; BL_HASH=$h ;;
+      bl_unhashable 'mutable arrays are not hashable'; return ;;
     cons)
-      h=314159265358979323; local cur=$v; while [[ $cur != nil ]]; do [[ ${BL_TYPE[$cur]-} == cons ]] || { bl_hash_value "$cur" || return; ((h^=BL_HASH)); break; }; bl_hash_value "${BL_A[$cur]}" || return; (( h ^= BL_HASH, h *= 1099511628211 )) || true; cur=${BL_B[$cur]}; done; BL_HASH=$h ;;
+      # Cons cells have no language mutation primitive, so list/pair structure
+      # is immutable and may safely use structural hashing.
+      h=314159265358979323; local cur=$v
+      while [[ $cur != nil ]]; do
+        if [[ ${BL_TYPE[$cur]-} != cons ]]; then
+          bl_hash_value "$cur" || return; (( h ^= BL_HASH, h *= 1099511628211 )) || true; break
+        fi
+        bl_hash_value "${BL_A[$cur]}" || return; (( h ^= BL_HASH, h *= 1099511628211 )) || true
+        cur=${BL_B[$cur]}
+      done
+      BL_HASH=$h ;;
     object|builtin|closure|compiled|bound)
       bl_prop_get_key "$v" __hash__; fn=$RET
-      if [[ $fn != nil ]]; then bl_apply_this "$fn" "$v" || return; bl_int_value "$RET" || { echo 'BLisp: __hash__ must return int' >&2; return 1; }; BL_HASH=$RET
-      else [[ $v =~ ^v([0-9]+)$ ]]; BL_HASH=${BASH_REMATCH[1]:-0}; fi ;;
-    *) echo 'BLisp: value is not hashable' >&2; return 1 ;;
+      if [[ $fn != nil ]]; then
+        bl_apply_this "$fn" "$v" || return
+        bl_int_value "$RET" || { bl_raise_error unhashable '__hash__ must return an integer'; return; }
+        BL_HASH=$RET
+      else
+        bl_prop_get_key "$v" __eq__; eqfn=$RET
+        if [[ $eqfn != nil ]]; then
+          bl_unhashable 'value defines __eq__ but not __hash__'; return
+        fi
+        # Heap IDs are monotonic identities in this runtime and therefore make
+        # a stable identity hash for values using identity equality.
+        [[ $v =~ ^v([0-9]+)$ ]] || { bl_unhashable 'value has no stable identity hash'; return; }
+        BL_HASH=${BASH_REMATCH[1]}
+      fi ;;
+    *) bl_unhashable 'value is not hashable'; return ;;
   esac
 }
 bl_builtin_hash() { bl_expect_arity $# 1 hash || return; bl_hash_value "$1" || return; bl_make_int "$BL_HASH"; }
@@ -1710,7 +1750,13 @@ bl_builtin_eqp() {
   local t1=${BL_TYPE[$1]-} t2=${BL_TYPE[$2]-}
   if [[ $t1 == "$t2" && ( $t1 == int || $t1 == float || $t1 == string || $t1 == symbol ) && ${BL_A[$1]} == "${BL_A[$2]}" ]]; then RET=true; else RET=false; fi
 }
-bl_equal_value() {
+# Structural equality is cycle-safe.  One top-level comparison owns a set of
+# already-observed value pairs; revisiting a pair means that branch is already
+# constrained by the same recursive equality relation.  This gives cyclic
+# arrays the usual bisimulation semantics instead of recursing until the Bash
+# stack explodes.  Custom __eq__ methods remain responsible for their own
+# recursion if they call back into equality on custom object graphs.
+bl_equal_value_inner() {
   local x=$1 y=$2
   if [[ $x == "$y" ]]; then RET=true; return; fi
   local tx=${BL_TYPE[$x]-} ty=${BL_TYPE[$y]-}
@@ -1723,17 +1769,41 @@ bl_equal_value() {
   case $tx in
     int|float|string|symbol) [[ ${BL_A[$x]} == "${BL_A[$y]}" ]] && RET=true || RET=false ;;
     bytes)
-      local __n=${BL_BYTES_LEN[$x]-0} __i; [[ $__n == ${BL_BYTES_LEN[$y]-0} ]] || { RET=false; return; }; for ((__i=0;__i<__n;++__i)); do [[ ${BL_BYTE_AT["$x|$__i"]} == ${BL_BYTE_AT["$y|$__i"]} ]] || { RET=false; return; }; done; RET=true ;;
+      local __n=${BL_BYTES_LEN[$x]-0} __i
+      [[ $__n == ${BL_BYTES_LEN[$y]-0} ]] || { RET=false; return; }
+      for ((__i=0;__i<__n;++__i)); do
+        [[ ${BL_BYTE_AT["$x|$__i"]} == ${BL_BYTE_AT["$y|$__i"]} ]] || { RET=false; return; }
+      done
+      RET=true ;;
     array)
-      local __n=${BL_ARR_LEN[$x]-0} __i; [[ $__n == ${BL_ARR_LEN[$y]-0} ]] || { RET=false; return; }; for ((__i=0;__i<__n;++__i)); do bl_prop_get_key "$x" "$__i"; local __a=$RET; bl_prop_get_key "$y" "$__i"; local __b=$RET; bl_equal_value "$__a" "$__b" || return; [[ $RET == true ]] || return; done; RET=true ;;
+      local __n=${BL_ARR_LEN[$x]-0} __i __pair="$x|$y"
+      [[ $__n == ${BL_ARR_LEN[$y]-0} ]] || { RET=false; return; }
+      [[ ${BL_EQUAL_SEEN[$__pair]-0} == 0 ]] || { RET=true; return; }
+      BL_EQUAL_SEEN[$__pair]=1
+      for ((__i=0;__i<__n;++__i)); do
+        bl_prop_get_key "$x" "$__i"; local __a=$RET
+        bl_prop_get_key "$y" "$__i"; local __b=$RET
+        bl_equal_value_inner "$__a" "$__b" || return
+        [[ $RET == true ]] || { RET=false; return 0; }
+      done
+      RET=true ;;
     object|builtin|closure|compiled|bound)
-      bl_prop_get_key "$x" __eq__; local __eqfn=$RET; if [[ $__eqfn != nil ]]; then bl_apply_this "$__eqfn" "$x" "$y" || return; else RET=false; fi ;;
+      bl_prop_get_key "$x" __eq__; local __eqfn=$RET
+      if [[ $__eqfn != nil ]]; then bl_apply_this "$__eqfn" "$x" "$y" || return; else RET=false; fi ;;
     cons)
-      bl_equal_value "${BL_A[$x]}" "${BL_A[$y]}"; [[ $RET == true ]] || return
-      bl_equal_value "${BL_B[$x]}" "${BL_B[$y]}"
+      local __pair="$x|$y"
+      [[ ${BL_EQUAL_SEEN[$__pair]-0} == 0 ]] || { RET=true; return; }
+      BL_EQUAL_SEEN[$__pair]=1
+      bl_equal_value_inner "${BL_A[$x]}" "${BL_A[$y]}" || return
+      [[ $RET == true ]] || { RET=false; return 0; }
+      bl_equal_value_inner "${BL_B[$x]}" "${BL_B[$y]}"
       ;;
     *) RET=false ;;
   esac
+}
+bl_equal_value() {
+  local -A BL_EQUAL_SEEN=()
+  bl_equal_value_inner "$1" "$2"
 }
 bl_builtin_equalp() { bl_expect_arity $# 2 equal? || return; bl_equal_value "$1" "$2"; }
 

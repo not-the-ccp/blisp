@@ -50,6 +50,40 @@ Clojure's `->`, `->>`, and `as->` demonstrate why first-only threading is insuff
 real APIs naturally place their subject in different argument positions. BLisp combines
 those cases in one expression system rather than requiring several macros.
 
+## Operators have one identity and several spellings
+
+Operator spelling is lexical sugar, not semantics. Each operator has one canonical identity
+and may expose a symbolic spelling, a readable English spelling, and the canonical identifier
+itself:
+
+```blx
+x + y
+x plus y
+x add y
+
+x <= limit
+x at_most limit
+x le limit
+
+item @ values
+item in values
+
+value |> transform
+value pipe transform
+value pipe_first transform
+```
+
+All spellings have exactly the same precedence, associativity, short-circuit behavior,
+protocol dispatch, and AST identity. Changing spelling must never change program meaning.
+Canonical names use identifier-safe underscores where necessary (`range_inc`, `pipe_first`,
+`not_instanceof`, etc.).
+
+English aliases are part of the core language because they provide a useful readable
+alternative without changing the source language. Additional natural-language vocabularies
+(such as German or French) are deliberately not global core keywords: if added, they should
+be optional lexical profiles that canonicalize to these same operator identities before
+parsing, so libraries do not fragment by spoken-language keyword set.
+
 ## `.` means receiver dispatch, not free-function lookup
 
 Prototype lookup is dynamic and receiver-sensitive:
@@ -175,6 +209,30 @@ hash(4) == hash(4.0)  // true
 ```
 
 Hashing follows equality. `===` / `is` exists for representation/identity-sensitive code.
+
+## Equality and hashability are one contract
+
+For every hashable pair `a` and `b`, `a == b` implies `hash(a) == hash(b)`. Hash-based
+containers may rely on that invariant rather than searching unrelated buckets to compensate
+for broken keys.
+
+Mutable structurally-equal builtins are therefore not hashable:
+
+```blx
+hash([1, 2])       // throws :unhashable
+hash(b"\x01")    // throws :unhashable
+```
+
+Immutable Lisp cons/list structure is structurally hashable. Plain objects/functions use
+stable identity hashing while they use identity equality. An object that defines `__eq__`
+becomes unhashable unless it also supplies a compatible integer-returning `__hash__`.
+A user-defined hash must remain stable for as long as the value is used as a hash key; the
+runtime can enforce built-in mutability rules but cannot prove arbitrary user code obeys
+that protocol.
+
+Structural equality itself is independent of hashability. Cyclic arrays compare with
+cycle-safe bisimulation semantics rather than recursing forever, even though arrays cannot
+be hash keys.
 
 ## Strings and bytes are intentionally distinct
 
