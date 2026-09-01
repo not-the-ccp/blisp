@@ -1,0 +1,36 @@
+name: Apply lossless string representation checkpoint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.sync/nul-transform.xz.b64'
+      - '.github/workflows/apply-nul-strings.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply and verify lossless string checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 -d .sync/nul-transform.xz.b64 | xz -d > /tmp/apply-nul-strings.py
+          echo '8d2b25397e1ad3eb9fc6834a88c73e93cbbcd56cc95f3ad9671e839404cd6671  /tmp/apply-nul-strings.py' | sha256sum -c -
+          python3 /tmp/apply-nul-strings.py
+          bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
+          source tests/differential-lib.sh
+          parity_suite string-nul tests/string-nul.blx
+          bash tests/fast.sh
+          bash tests/diagnostics.sh
+          rm -rf .sync .github/workflows/apply-nul-strings.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Represent embedded NUL losslessly in strings'
+          git push
