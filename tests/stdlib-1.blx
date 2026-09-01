@@ -1,0 +1,32 @@
+include "../lib/testing.blx";
+include "../lib/collections.blx";
+include "../lib/seq.blx";
+include "../lib/text.blx";
+
+let t = testing.suite("stdlib-1");
+
+t.test("deque", fn() {
+  let d = new Deque([1,2,3]); d.pushFront(0); d.pushBack(4);
+  testing.equal(toArray(d), [0,1,2,3,4], null);
+  testing.equal(d.popFront(), 0, null); testing.equal(d.popBack(), 4, null);
+});
+
+t.test("heap", fn() {
+  let h = new Heap([5,1,4,2,3], null); let out=[];
+  while (len(h)>0) out.push(h.pop()); testing.equal(out,[1,2,3,4,5],null);
+});
+
+t.test("counter", fn() { let c=new Counter("abacaba"); testing.equal(c.get("a"),4,null); testing.equal(c.get("z"),0,null); });
+
+t.test("lazy seq", fn() {
+  let out=seq.collect(seq.take(seq.map(seq.count(1,1), x=>x*x),5));
+  testing.equal(out,[1,4,9,16,25],null);
+  testing.equal(seq.collect(seq.zip([1,2,3],["a","b"])), [[1,"a"],[2,"b"]], null);
+});
+
+t.test("unicode helpers", fn() {
+  testing.equal(text.codePoint("é"),233,null); testing.equal(text.codePoint("🙂"),128578,null);
+  testing.equal(text.fromCodePoint(128578),"🙂",null);
+});
+
+t.report();
