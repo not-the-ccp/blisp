@@ -1,0 +1,28 @@
+include "../lib/testing.blx";
+include "../lib/path.blx";
+include "../lib/math.blx";
+include "../lib/stats.blx";
+include "../lib/json.blx";
+include "../lib/csv.blx";
+include "../lib/uri.blx";
+
+let t = testing.suite("stdlib-2");
+
+t.test("path", fn() { testing.equal(path.normalize("/a/./b/../c"),"/a/c",null); testing.equal(path.join("/a","b","..","c.txt"),"/a/c.txt",null); });
+
+t.test("math/statistics", fn() {
+  testing.equal(math.gcd(84,30),6,null); testing.equal(math.factorial(6),720,null);
+  testing.equal(stats.median([9,1,5,3]),4,null); testing.equal(stats.mean([1,2,3,4]),2.5,null);
+});
+
+t.test("json unicode", fn() {
+  let d=json.parse("{\"e\":\"\\u00e9\",\"face\":\"\\ud83d\\ude42\",\"n\":2.5}");
+  testing.equal(d.e,"é",null); testing.equal(d.face,"🙂",null);
+  let rt=json.parse(json.stringify(d)); testing.equal([rt.e,rt.face,rt.n],[d.e,d.face,d.n],null);
+});
+
+t.test("csv", fn() { let rows=csv.parse("a,\"b,c\"\n1,2"); testing.equal(rows,[["a","b,c"],["1","2"]],null); testing.equal(csv.parse(csv.stringify(rows)),rows,null); });
+
+t.test("uri", fn() { let s="hello é /"; testing.equal(uri.decodeComponent(uri.encodeComponent(s)),s,null); });
+
+t.report();
