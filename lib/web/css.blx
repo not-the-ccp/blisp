@@ -134,16 +134,13 @@ fn _webCssSheet(...rulesList) {
 
 fn _webCssRenderDeclarations(entries) {
   let out = "";
-  let seen = {};
 
+  // Declaration order and duplicates are significant CSS semantics. Authors
+  // commonly repeat a property to provide progressively newer fallbacks.
   for (let pair of entries) {
     let name = pair[0];
     let value = pair[1];
-
-    if (seen[name] == true) _webCssError("duplicate CSS property: " + name);
-    seen[name] = true;
-
-    if (value == null or value == false) continue;
+    if (value == null) continue;
     out += name + ":" + _webCssSerializeValue(value) + ";";
   }
 
