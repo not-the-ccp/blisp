@@ -24,9 +24,7 @@ t.test("HTML fragments, arrays, and nil children", fn() {
     [h.p("one"), null, h.p("two")],
     h.fragment(h.span("a"), h.span("b"))
   );
-  let expected = "<div class=" + q + "box" + q + "><h1>Title" + closeTag("h1")
-    + "<p>one" + closeTag("p") + "<p>two" + closeTag("p")
-    + "<span>a" + closeTag("span") + "<span>b" + closeTag("span") + closeTag("div");
+  let expected = "<div class=" + q + "box" + q + "><h1>Title" + closeTag("h1") + "<p>one" + closeTag("p") + "<p>two" + closeTag("p") + "<span>a" + closeTag("span") + "<span>b" + closeTag("span") + closeTag("div");
   testing.equal(h.render(tree), expected, null);
 });
 
@@ -45,9 +43,7 @@ t.test("exact attributes and deterministic object shorthand", fn() {
 t.test("HTML rejects structurally invalid values", fn() {
   testing.throws(fn() { h.el("bad tag", "x"); }, :webHtml);
   testing.throws(fn() { h.render(h.input("child")); }, :webHtml);
-  testing.throws(fn() {
-    h.render(h.input(h.attrs(h.attr("disabled", true), h.attr("disabled", true))));
-  }, :webHtml);
+  testing.throws(fn() { h.render(h.input(h.attrs(h.attr("disabled", true), h.attr("disabled", true)))); }, :webHtml);
 });
 
 t.test("explicit unsafe raw HTML is never implicit", fn() {
@@ -62,11 +58,7 @@ t.test("CSS declarations are structured and deterministic", fn() {
     css.rule("body", {font_family: "system-ui", margin: "0"}),
     css.rule(".card:hover", {transform: "translateY(-2px)"})
   );
-  testing.equal(
-    css.render(sheet),
-    "body{font-family:system-ui;margin:0;}.card:hover{transform:translateY(-2px);}",
-    null
-  );
+  testing.equal(css.render(sheet), "body{font-family:system-ui;margin:0;}.card:hover{transform:translateY(-2px);}", null);
 });
 
 t.test("CSS preserves duplicate fallback declarations", fn() {
@@ -75,11 +67,7 @@ t.test("CSS preserves duplicate fallback declarations", fn() {
     css.prop("display", "grid"),
     css.prop("--enabled", false)
   );
-  testing.equal(
-    css.render(css.rule(".layout", declarations)),
-    ".layout{display:block;display:grid;--enabled:false;}",
-    null
-  );
+  testing.equal(css.render(css.rule(".layout", declarations)), ".layout{display:block;display:grid;--enabled:false;}", null);
 });
 
 t.test("CSS exact custom properties and trusted raw escape hatch", fn() {
@@ -87,11 +75,7 @@ t.test("CSS exact custom properties and trusted raw escape hatch", fn() {
     css.prop("--accent", "#83b"),
     css.prop("background-image", css.raw("url(data:image/svg+xml;base64,abc;def)"))
   );
-  testing.equal(
-    css.render(css.rule(":root", declarations)),
-    ":root{--accent:#83b;background-image:url(data:image/svg+xml;base64,abc;def);}",
-    null
-  );
+  testing.equal(css.render(css.rule(":root", declarations)), ":root{--accent:#83b;background-image:url(data:image/svg+xml;base64,abc;def);}", null);
 });
 
 t.test("CSS prevents accidental structural breakout", fn() {
@@ -99,7 +83,7 @@ t.test("CSS prevents accidental structural breakout", fn() {
   testing.throws(fn() { css.rule("x}body", {color: "red"}); }, :webCss);
 });
 
-t.test("static page renderer emits a complete document", fn() {
+t.test("static page renderer composes the document", fn() {
   let page = web.static.page({
     lang: "en",
     title: "A & B",
@@ -107,8 +91,7 @@ t.test("static page renderer emits a complete document", fn() {
     body: h.main(h.h1("Hello"), h.p("Pure BLisp source"))
   });
   let titleMarkup = "<title>A &amp; B" + closeTag("title");
-  let mainMarkup = "<main><h1>Hello" + closeTag("h1")
-    + "<p>Pure BLisp source" + closeTag("p") + closeTag("main");
+  let mainMarkup = "<main><h1>Hello" + closeTag("h1") + "<p>Pure BLisp source" + closeTag("p") + closeTag("main");
   testing.equal(page.startsWith("<!doctype html><html "), true, null);
   testing.equal(page.contains(titleMarkup), true, null);
   testing.equal(page.contains("<link "), true, null);
