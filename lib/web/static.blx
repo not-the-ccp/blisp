@@ -1,0 +1,42 @@
+include "html.blx";
+
+// Build-time/static rendering uses the same HTML node values intended for the
+// future live DOM renderer.
+
+fn _webStaticAppendHead(out, value) {
+  if (value == null) return out;
+  if (type(value) == "array") {
+    for (let item of value) _webStaticAppendHead(out, item);
+  } else out.push(value);
+  return out;
+}
+
+fn _webStaticPage(options) {
+  if (options == null) options = {};
+  if (type(options) != "object") throw({kind: :webStatic, message: "web.static.page() expects an options object"});
+
+  let title = options.title == null ? "" : options.title;
+  let lang = options.lang == null ? "en" : options.lang;
+
+  let head = [
+    webHtml.meta({charset: "utf-8"}),
+    webHtml.meta({content: "width=device-width, initial-scale=1", name: "viewport"}),
+    webHtml.title(title)
+  ];
+
+  if (options.stylesheet != null) {
+    head.push(webHtml.link({href: options.stylesheet, rel: "stylesheet"}));
+  }
+
+  _webStaticAppendHead(head, options.head);
+
+  let document = webHtml.html(
+    {lang},
+    webHtml.head(head),
+    webHtml.body(options.body)
+  );
+
+  return "<!doctype html>" + webHtml.render(document);
+}
+
+const webStatic = {page: _webStaticPage};
