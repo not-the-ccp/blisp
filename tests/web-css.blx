@@ -1,0 +1,33 @@
+include "../lib/testing.blx";
+include "../lib/web.blx";
+
+let t = testing.suite("web-css");
+let css = web.css;
+
+t.test("declarations are deterministic", fn() {
+  let sheet = css.sheet(
+    css.rule("body", {font_family: "system-ui", margin: "0"}),
+    css.rule(".card:hover", {transform: "translateY(-2px)"})
+  );
+  testing.equal(css.render(sheet), "body{font-family:system-ui;margin:0;}.card:hover{transform:translateY(-2px);}", null);
+});
+
+t.test("duplicate fallback declarations are preserved", fn() {
+  let declarations = css.props(css.prop("display", "block"), css.prop("display", "grid"), css.prop("--enabled", false));
+  testing.equal(css.render(css.rule(".layout", declarations)), ".layout{display:block;display:grid;--enabled:false;}", null);
+});
+
+t.test("custom properties and raw values", fn() {
+  let declarations = css.props(
+    css.prop("--accent", "#83b"),
+    css.prop("background-image", css.raw("url(data:image/svg+xml;base64,abc;def)"))
+  );
+  testing.equal(css.render(css.rule(":root", declarations)), ":root{--accent:#83b;background-image:url(data:image/svg+xml;base64,abc;def);}", null);
+});
+
+t.test("structural breakout is rejected", fn() {
+  testing.throws(fn() { css.render(css.rule("x", {color: "red;})); }, :webCss);
+  testing.throws(fn() { css.rule("x}body", {color: "red"}); }, :webCss);
+});
+
+t.report();
