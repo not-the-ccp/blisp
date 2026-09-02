@@ -26,7 +26,7 @@ jobs:
           echo '== syntax =='
           bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
           echo '== provenance =='
-          bash tests/provenance.sh
+          bash -x tests/provenance.sh
           echo '== fast =='
           bash tests/fast.sh
           echo '== stdlib =='
