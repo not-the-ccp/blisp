@@ -20,12 +20,18 @@ jobs:
       - name: Apply, verify, and commit provenance tables
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+          echo '== transform =='
           python3 .sync/apply-provenance.py
+          echo '== syntax =='
           bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
+          echo '== provenance =='
           bash tests/provenance.sh
+          echo '== fast =='
           bash tests/fast.sh
+          echo '== stdlib =='
           bash tests/stdlib-parity.sh
+          echo '== commit =='
           rm -rf .sync .github/workflows/apply-provenance.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
