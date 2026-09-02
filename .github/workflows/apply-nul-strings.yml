@@ -66,17 +66,18 @@ jobs:
 
           python3 .sync/apply-nul-strings.py
 
-          # Build the textual \xHH stream without asking printf to parse a
-          # half-formed \x escape in its own format string.
           python3 - <<'PY'
           from pathlib import Path
+
+          # Build the textual \xHH stream without asking printf to parse a
+          # half-formed \x escape in its own format string.
           p=Path('runtime.sh')
           s=p.read_text()
           a=s.find('bl_string_write_fd() {\n')
           b=s.find('bl_string_write_path()', a)
           if a < 0 or b < 0:
               raise SystemExit('string writer function anchors missing')
-          new=r'''bl_string_write_fd() {
+          writer=r'''bl_string_write_fd() {
             local v=$1 fd=$2 i pair esc= chunk=0
             bl_string_hex "$v" || return; local hex=$RET
             for ((i=0;i<${#hex};i+=2)); do
@@ -86,17 +87,39 @@ jobs:
             [[ -z $esc ]] || printf '%b' "$esc" >&"$fd"
           }
           '''
-          p.write_text(s[:a]+new+s[b:])
+          p.write_text(s[:a]+writer+s[b:])
+
+          # Bash single-quoted '\\' is two characters.  The migrated surface
+          # lexer needs to recognize one source backslash, so normalize the
+          # comparison/case pattern to the shell-grammar forms that denote one.
+          p=Path('surface.sh')
+          lines=p.read_text().splitlines(keepends=True)
+          fixed_if=0
+          fixed_case=0
+          for i,line in enumerate(lines):
+              if i+1 < len(lines) and 'if [[ $c ==' in line and 'unterminated string escape' in lines[i+1]:
+                  indent=line[:len(line)-len(line.lstrip())]
+                  lines[i]=indent+'if [[ $c == \\\\ ]]; then\n'
+                  fixed_if+=1
+              if 'buf+=5c;;' in line:
+                  pos=line.index('buf+=5c;;')
+                  indent=line[:len(line)-len(line.lstrip())]
+                  lines[i]=indent+'\\\\) '+line[pos:]
+                  fixed_case+=1
+          if fixed_if != 1 or fixed_case != 1:
+              raise SystemExit(f'unexpected surface backslash sites: if={fixed_if} case={fixed_case}')
+          p.write_text(''.join(lines))
           PY
 
           bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
 
-          printf '%s\n' '[nul probe] length'
+          printf '%s\n' '[nul probe] hybrid length/equality/utf8'
           ./blisp evalx '"\0".length'
-          printf '%s\n' '[nul probe] equality'
           ./blisp evalx '"\0" == "\0"'
-          printf '%s\n' '[nul probe] utf8'
           ./blisp evalx '"\0".encode("utf-8").hex()'
+          printf '%s\n' '[nul probe] classic length/utf8'
+          ./blisp eval '(string-length "\0")'
+          ./blisp eval '(.hex (.encode "\0" "utf-8"))' || true
 
           source tests/differential-lib.sh
           parity_suite string-nul tests/string-nul.blx
