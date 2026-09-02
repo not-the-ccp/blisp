@@ -1,0 +1,47 @@
+include "../lib/web.blx";
+
+let h = web.html;
+let css = web.css;
+
+let styles = css.sheet(
+  css.rule("*", {box_sizing: "border-box"}),
+  css.rule("body", {
+    margin: "0",
+    font_family: "system-ui, sans-serif",
+    background: "#101114",
+    color: "#f5f5f7"
+  }),
+  css.rule(".shell", {
+    max_width: "52rem",
+    margin: "0 auto",
+    padding: "5rem 1.5rem"
+  }),
+  css.rule(".card", {
+    padding: "1.25rem",
+    border: "1px solid #34363d",
+    border_radius: "1rem",
+    background: "#181a20"
+  }),
+  css.rule("a", {color: "#9db7ff"})
+);
+
+let page = web.static.page({
+  lang: "en",
+  title: "BLisp web example",
+  stylesheet: "app.css",
+  body: h.main(
+    {class: "shell"},
+    h.h1("A website authored in BLisp"),
+    h.p("The HTML tree and stylesheet are ordinary BLisp values."),
+    h.section(
+      {class: "card", aria_label: "Example card"},
+      h.h2("No authored HTML, CSS, or JavaScript"),
+      h.p("Static output uses the browser's real HTML and CSS rendering model."),
+      h.a({href: "https://example.com"}, "A normal link")
+    )
+  )
+});
+
+println(page);
+println("\n--- app.css ---");
+println(css.render(styles));
