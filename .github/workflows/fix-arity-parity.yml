@@ -1,0 +1,96 @@
+name: Fix arity diagnostic parity
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/fix-arity-parity.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Patch, verify, and commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p=Path('runtime.sh')
+          s=p.read_text()
+          a=s.find('bl_bind_params() {\n')
+          b=s.find('\n\nbl_apply() {', a)
+          if a < 0 or b < 0:
+              raise SystemExit('bl_bind_params anchors missing')
+          old=s[a:b]
+          if 'arity mismatch: expected at least' not in old or 'malformed lambda parameter list' not in old:
+              raise SystemExit('unexpected bl_bind_params body')
+          new=r'''bl_bind_params() {
+            local env=$1 params=$2; shift 2
+            local -a args=("$@")
+            local scan=$params required=0 tail
+
+            # Validate the complete parameter shape and arity before installing
+            # any bindings.  This keeps failed calls atomic and gives the
+            # interpreter/compiler one deterministic diagnostic contract.
+            while [[ ${BL_TYPE[$scan]-} == cons ]]; do
+              ((required++)) || true
+              scan=${BL_B[$scan]}
+            done
+            tail=$scan
+            if [[ $tail == nil ]]; then
+              (( ${#args[@]} == required )) || {
+                echo "BLisp: arity mismatch: expected $required, got ${#args[@]}" >&2
+                return 1
+              }
+            else
+              [[ ${BL_TYPE[$tail]-} == symbol ]] || { echo 'BLisp: malformed lambda parameter list' >&2; return 1; }
+              (( ${#args[@]} >= required )) || {
+                echo "BLisp: arity mismatch: expected at least $required, got ${#args[@]}" >&2
+                return 1
+              }
+            fi
+
+            local cur=$params i=0 namev
+            while [[ ${BL_TYPE[$cur]-} == cons ]]; do
+              namev=${BL_A[$cur]}
+              [[ ${BL_TYPE[$namev]-} == symbol ]] || { echo 'BLisp: lambda parameter is not a symbol' >&2; return 1; }
+              bl_env_define "$env" "${BL_A[$namev]}" "${args[i]}" >/dev/null
+              ((i++)) || true
+              cur=${BL_B[$cur]}
+            done
+            if [[ $cur == nil ]]; then RET=nil; return 0; fi
+
+            local -a rest=("${args[@]:i}")
+            bl_list_from_array "${rest[@]}"; local restv=$RET
+            bl_env_define "$env" "${BL_A[$cur]}" "$restv" >/dev/null
+            RET=$restv
+          }'''
+          p.write_text(s[:a]+new+s[b:])
+
+          p=Path('compiler.sh')
+          s=p.read_text()
+          old='''  if [[ -n $restname ]]; then\n    comp_emit "  (( \\$# >= ${#pnames[@]} )) || { echo 'BLisp: arity mismatch in compiled closure' >&2; return 1; }"\n  else\n    comp_emit "  (( \\$# == ${#pnames[@]} )) || { echo 'BLisp: arity mismatch in compiled closure' >&2; return 1; }"\n  fi\n'''
+          new='''  if [[ -n $restname ]]; then\n    comp_emit "  (( \\$# >= ${#pnames[@]} )) || { echo \\"BLisp: arity mismatch: expected at least ${#pnames[@]}, got \\$#\\" >&2; return 1; }"\n  else\n    comp_emit "  (( \\$# == ${#pnames[@]} )) || { echo \\"BLisp: arity mismatch: expected ${#pnames[@]}, got \\$#\\" >&2; return 1; }"\n  fi\n'''
+          if s.count(old) != 1:
+              raise SystemExit('compiled arity block missing or ambiguous')
+          p.write_text(s.replace(old,new))
+          PY
+
+          bash -n runtime.sh compiler.sh
+          bash tests/outcomes.sh
+          bash tests/fast.sh
+
+          rm .github/workflows/fix-arity-parity.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Unify call arity validation and diagnostics'
+          git push
