@@ -16,21 +16,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Apply and verify lossless string checkpoint
+      - name: Inspect current migration anchors
         shell: bash
         run: |
           set -euo pipefail
           base64 -d .sync/nul-transform.xz.b64 | xz -d > /tmp/apply-nul-strings.py
           echo 'f83481561c5136e51642c0f549a27919966d1fb25cf1cd10af1c3283b5a9bfee  /tmp/apply-nul-strings.py' | sha256sum -c -
-          python3 /tmp/apply-nul-strings.py
-          bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
-          source tests/differential-lib.sh
-          parity_suite string-nul tests/string-nul.blx
-          bash tests/fast.sh
-          bash tests/diagnostics.sh
-          rm -rf .sync .github/workflows/apply-nul-strings.yml
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'Represent embedded NUL losslessly in strings'
-          git push
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('/tmp/apply-nul-strings.py').read_text()
+          for term in ('surface.sh', 'cannot store NUL', 'unterminated string escape'):
+              print(f'===== {term} =====')
+              start = 0
+              found = False
+              while True:
+                  i = p.find(term, start)
+                  if i < 0:
+                      break
+                  found = True
+                  print(p[max(0, i-1200):min(len(p), i+2200)])
+                  start = i + len(term)
+              if not found:
+                  print('<not found>')
+          PY
+          exit 1
