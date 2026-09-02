@@ -38,7 +38,7 @@ jobs:
             local scan=$params required=0 tail
 
             # Validate the complete parameter shape and arity before installing
-            # any bindings.  This keeps failed calls atomic and gives the
+            # any bindings. This keeps failed calls atomic and gives the
             # interpreter/compiler one deterministic diagnostic contract.
             while [[ ${BL_TYPE[$scan]-} == cons ]]; do
               ((required++)) || true
