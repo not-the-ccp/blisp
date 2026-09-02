@@ -16,27 +16,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Inspect current migration anchors
+      - name: Materialize migration source
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d .sync/nul-transform.xz.b64 | xz -d > /tmp/apply-nul-strings.py
-          echo 'f83481561c5136e51642c0f549a27919966d1fb25cf1cd10af1c3283b5a9bfee  /tmp/apply-nul-strings.py' | sha256sum -c -
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path('/tmp/apply-nul-strings.py').read_text()
-          for term in ('surface.sh', 'cannot store NUL', 'unterminated string escape'):
-              print(f'===== {term} =====')
-              start = 0
-              found = False
-              while True:
-                  i = p.find(term, start)
-                  if i < 0:
-                      break
-                  found = True
-                  print(p[max(0, i-1200):min(len(p), i+2200)])
-                  start = i + len(term)
-              if not found:
-                  print('<not found>')
-          PY
-          exit 1
+          base64 -d .sync/nul-transform.xz.b64 | xz -d > .sync/apply-nul-strings.py
+          echo 'f83481561c5136e51642c0f549a27919966d1fb25cf1cd10af1c3283b5a9bfee  .sync/apply-nul-strings.py' | sha256sum -c -
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .sync/apply-nul-strings.py
+          git commit -m 'Materialize readable NUL string migration'
+          git push
