@@ -17,6 +17,24 @@ rep(
     """BL_FLOW=\nBL_FLOW_VALUE=nil\n\n# Source identity and parsed-node provenance are side tables, deliberately\n# separate from ordinary BLisp values.  Quoted/code-as-data values therefore\n# keep the same equality, hashing and printed representation whether or not a\n# parser happened to associate source metadata with their heap handles.\ndeclare -Ag BL_SOURCE_ID_BY_NAME=() BL_SOURCE_NAME=()\ndeclare -Ag BL_NODE_SOURCE=() BL_NODE_START_LINE=() BL_NODE_START_COL=()\ndeclare -Ag BL_NODE_END_LINE=() BL_NODE_END_COL=() BL_NODE_ORIGIN=()\nBL_SOURCE_SEQ=0\n\nbl_source_intern() {\n  local name=$1\n  if [[ -v 'BL_SOURCE_ID_BY_NAME[$name]' ]]; then RET=${BL_SOURCE_ID_BY_NAME[$name]}; return; fi\n  ((++BL_SOURCE_SEQ)) || true\n  local id=\"s$BL_SOURCE_SEQ\"\n  BL_SOURCE_ID_BY_NAME[$name]=$id; BL_SOURCE_NAME[$id]=$name; RET=$id\n}\n\n# Spans are half-open: start is the first source character belonging to the\n# node and end is the position immediately after the final character.\nbl_node_span_set() {\n  local v=$1 src=$2 sl=$3 sc=$4 el=$5 ec=$6\n  [[ $v =~ ^v[0-9]+$ ]] || return 0\n  BL_NODE_SOURCE[$v]=$src; BL_NODE_START_LINE[$v]=$sl; BL_NODE_START_COL[$v]=$sc\n  BL_NODE_END_LINE[$v]=$el; BL_NODE_END_COL[$v]=$ec\n}\nbl_node_origin_set() { local v=$1 origin=$2; [[ $v =~ ^v[0-9]+$ ]] || return 0; BL_NODE_ORIGIN[$v]=$origin; }\n\nbl_alloc() {\n""",
 )
 
+# Callable construction is a constructor, not a predicate.  Previously its
+# last `[[ proto != nil ]] && ...` leaked status 1 while bootstrapping the first
+# builtins; a caller using `set -e` could therefore abort runtime initialization.
+rep(
+    "runtime.sh",
+    """bl_init_callable() {\n  local v=$1 type=$2\n  BL_TYPE[$v]=$type\n  [[ $BL_FUNCTION_PROTO != nil ]] && BL_PROTO[$v]=$BL_FUNCTION_PROTO\n}\n""",
+    """bl_init_callable() {\n  local v=$1 type=$2\n  BL_TYPE[$v]=$type\n  [[ $BL_FUNCTION_PROTO == nil ]] || BL_PROTO[$v]=$BL_FUNCTION_PROTO\n  return 0\n}\n""",
+)
+
+# Runtime reinitialization must clear every heap side table before value IDs are
+# reused.  In particular BL_STR_HEX used to survive a reset, so a fresh `vN`
+# could inherit the canonical bytes of an unrelated old NUL-containing string.
+rep(
+    "runtime.sh",
+    """  BL_PROP=(); BL_PROTO=(); BL_KEY_COUNT=(); BL_KEY_AT=(); BL_ARR_LEN=(); BL_BYTES_LEN=(); BL_BYTE_AT=()\n  BL_OBJECT_PROTO=nil; BL_ARRAY_PROTO=nil; BL_FUNCTION_PROTO=nil; BL_STRING_PROTO=nil; BL_BYTES_PROTO=nil; BL_TCP_PROTO=nil; BL_FILE_PROTO=nil\n""",
+    """  BL_PROP=(); BL_PROTO=(); BL_KEY_COUNT=(); BL_KEY_AT=(); BL_ARR_LEN=(); BL_BYTES_LEN=(); BL_BYTE_AT=(); BL_STR_HEX=()\n  BL_SOURCE_ID_BY_NAME=(); BL_SOURCE_NAME=(); BL_SOURCE_SEQ=0\n  BL_NODE_SOURCE=(); BL_NODE_START_LINE=(); BL_NODE_START_COL=(); BL_NODE_END_LINE=(); BL_NODE_END_COL=(); BL_NODE_ORIGIN=()\n  BL_OBJECT_PROTO=nil; BL_ARRAY_PROTO=nil; BL_FUNCTION_PROTO=nil; BL_STRING_PROTO=nil; BL_BYTES_PROTO=nil; BL_TCP_PROTO=nil; BL_FILE_PROTO=nil; BL_PROCESS_HANDLE_PROTO=nil\n""",
+)
+
 # Metadata must neither accidentally keep AST values alive nor survive after a
 # heap value has been collected.
 rep(
@@ -116,7 +134,16 @@ cd -- "$(dirname -- "$0")/.."
 source runtime.sh
 source surface.sh
 
+# Runtime initialization must be safe in strict-shell embedders and clear all
+# value side tables before recycling heap IDs.
 bl_runtime_init
+bl_make_string_from_hex 00; old=$RET
+[[ -v 'BL_STR_HEX[$old]' ]]
+bl_runtime_init
+bl_make_string plain; fresh=$RET
+[[ $fresh == "$old" ]]
+[[ ! -v 'BL_STR_HEX[$fresh]' ]]
+
 src=$'let x = 1;\nprintln(x + 2);\n'
 bl_parse_surface_all "$src" '/virtual/example.blx' 10
 ((${#BL_FORMS[@]} == 2))
@@ -144,8 +171,8 @@ f2=${BL_FORMS[0]}
 [[ ${BL_NODE_SOURCE[$f2]-} == "$sid" && ${BL_NODE_START_LINE[$f2]-} == 30 ]]
 
 # Metadata is side-table-only: ordinary value equality/hashing does not inspect it.
-bl_make_string 'same'; a=$RET
-bl_make_string 'same'; b=$RET
+bl_make_string same; a=$RET
+bl_make_string same; b=$RET
 bl_node_span_set "$a" "$sid" 99 1 99 5
 bl_equal_value "$a" "$b"
 [[ $RET == true ]]
@@ -162,6 +189,3 @@ rep(
     """bash tests/diagnostics.sh\n\nprintf '%s\\n' '[fast 2/4] focused interpreter/compiler suites (isolated, parallel)'\n""",
     """bash tests/diagnostics.sh\nbash tests/provenance.sh\n\nprintf '%s\\n' '[fast 2/4] focused interpreter/compiler suites (isolated, parallel)'\n""",
 )
-
-# Track the concrete milestone in the architecture issue without claiming the
-# whole provenance/trace task is finished.
