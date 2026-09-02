@@ -1,0 +1,24 @@
+include "../lib/web.blx";
+
+let h = web.html;
+let css = web.css;
+
+let styles = css.sheet(
+  css.rule("body", {margin: "0", font_family: "system-ui"}),
+  css.rule(".card", {padding: "1rem"})
+);
+
+let page = web.static.page({
+  title: "Build fixture",
+  stylesheet: "assets/app.css",
+  body: h.main(
+    {class: "card"},
+    h.h1("Static BLisp build"),
+    h.p("Generated from a site value")
+  )
+});
+
+web.static.site(
+  web.static.file("index.html", page),
+  web.static.file("assets/app.css", css.render(styles))
+);
