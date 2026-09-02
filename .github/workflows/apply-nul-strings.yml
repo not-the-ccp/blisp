@@ -24,7 +24,6 @@ jobs:
 
           python3 - <<'PY'
           from pathlib import Path
-
           path = Path('.sync/apply-nul-strings.py')
           s = path.read_text()
           needle = "rep('surface.sh',old,new)\n# All parser str tokens are now hex. There are two direct datum/primary cases.\n"
@@ -69,8 +68,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # Build the textual \xHH stream without asking printf to parse a
-          # half-formed \x escape in its own format string.
           p=Path('runtime.sh')
           s=p.read_text()
           a=s.find('bl_string_write_fd() {\n')
@@ -89,8 +86,6 @@ jobs:
           '''
           p.write_text(s[:a]+writer+s[b:])
 
-          # Normalize only the text-string escape branch. Byte literals have a
-          # separate, already-tested escape parser and must not be touched.
           p=Path('surface.sh')
           lines=p.read_text().splitlines(keepends=True)
           string_if=-1
@@ -107,10 +102,7 @@ jobs:
               raise SystemExit('text-string escape branch not found')
           indent=lines[string_if][:len(lines[string_if])-len(lines[string_if].lstrip())]
           lines[string_if]=indent+'if [[ $c == \\\\ ]]; then\n'
-          case_sites=[]
-          for i in range(string_if, string_end+1):
-              if 'buf+=5c;;' in lines[i]:
-                  case_sites.append(i)
+          case_sites=[i for i in range(string_if,string_end+1) if 'buf+=5c;;' in lines[i]]
           if len(case_sites) != 1:
               raise SystemExit(f'unexpected text-string backslash case sites: {case_sites}')
           i=case_sites[0]
@@ -128,6 +120,25 @@ jobs:
           ./blisp evalx '"\0".encode("utf-8").hex()'
           printf '%s\n' '[nul probe] classic length'
           ./blisp eval '(string-length "\0")'
+
+          # One diagnostic execution marks each assertion boundary. The actual
+          # conformance source remains unchanged and is what parity/CI compile.
+          mkdir -p build
+          python3 - <<'PY'
+          from pathlib import Path
+          src=Path('tests/string-nul.blx').read_text().splitlines(keepends=True)
+          out=[]
+          n=0
+          for line in src:
+              if line.lstrip().startswith('assert('):
+                  n+=1
+                  out.append(f'println("__NUL_CHECK_{n}__");\n')
+              out.append(line)
+          Path('build/string-nul-debug.blx').write_text(''.join(out))
+          print(f'instrumented {n} assertions')
+          PY
+          printf '%s\n' '[nul probe] full checkpoint run'
+          ./blisp run build/string-nul-debug.blx || true
 
           source tests/differential-lib.sh
           parity_suite string-nul tests/string-nul.blx
