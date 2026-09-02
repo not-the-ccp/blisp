@@ -58,8 +58,9 @@ fn _webStaticValidatePath(path) {
 
 fn _webStaticFile(path, content) {
   _webStaticValidatePath(path);
-  if (type(content) != "string") {
-    _webStaticError("web.static.file() content must currently be a string");
+  let contentType = type(content);
+  if (contentType != "string" and contentType != "bytes") {
+    _webStaticError("web.static.file() content must be a string or bytes");
   }
   return {
     __web_static_file: true,
