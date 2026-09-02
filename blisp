@@ -11,10 +11,11 @@ usage() {
   cat <<'TXT'
 usage:
   blisp run FILE [args...]         # .bl = classic Lisp syntax, .blx/.blh = hybrid syntax
-  blisp check FILE                       # parse source/include graph without executing it
+  blisp check FILE                 # parse source/include graph without executing it
   blisp eval EXPR
   blisp evalx EXPR                 # hybrid syntax
-  blisp compile FILE [-o OUTPUT]  # auto-detects .blx/.bx
+  blisp compile FILE [-o OUTPUT]   # auto-detects .blx/.bx
+  blisp web build FILE [-o DIR]    # emit a static web.static.site() result
   blisp repl
   blisp replx
 TXT
@@ -261,6 +262,84 @@ cmd_compile() {
   printf '%s\n' "$out"
 }
 
+web_build_path_valid() {
+  local path=$1 part
+  [[ -n $path && $path != /* && $path != *\\* ]] || return 1
+  local IFS=/
+  read -r -a parts <<< "$path"
+  for part in "${parts[@]}"; do
+    [[ -n $part && $part != . && $part != .. ]] || return 1
+  done
+}
+
+cmd_web_build() {
+  (($# >= 1)) || { usage >&2; return 2; }
+  local file=$1; shift; local out=dist
+  while (($#)); do
+    case $1 in
+      -o|--output) shift; (($#)) || { echo 'blisp: web build -o needs a directory' >&2; return 2; }; out=$1 ;;
+      *) echo "blisp: unknown web build option: $1" >&2; return 2 ;;
+    esac
+    shift
+  done
+
+  [[ -f $file ]] || { echo "blisp: no such file: $file" >&2; return 2; }
+  is_surface_file "$file" || { echo 'blisp: web build currently expects a hybrid .blx/.bx/.blh source file' >&2; return 2; }
+  [[ -n $out ]] || { echo 'blisp: web build output directory may not be empty' >&2; return 2; }
+  if [[ -e $out && ! -d $out ]]; then
+    echo "blisp: web build output exists and is not a directory: $out" >&2; return 2
+  fi
+  if [[ -d $out ]] && [[ -n $(find "$out" -mindepth 1 -print -quit 2>/dev/null) ]]; then
+    echo "blisp: web build output directory is not empty: $out" >&2
+    return 2
+  fi
+
+  bl_runtime_init
+  load_stdlib_interpreted || return
+  BL_SOURCE_CHUNKS=(); BL_SOURCE_CHUNK_FILES=(); BL_SOURCE_CHUNK_LINES=(); BL_INCLUDE_ACTIVE=(); BL_INCLUDE_SEEN=()
+  bl_collect_hybrid_file "$file" || return
+  bl_interpret_surface_chunks "$BL_GLOBAL_ENV" || return
+  local site=$RET marker files count i entry pathv path content dest
+
+  [[ ${BL_TYPE[$site]-} == object ]] || { echo 'blisp: web build source must end with web.static.site(...)' >&2; return 1; }
+  bl_prop_get_key "$site" __web_static_site; marker=$RET
+  [[ $marker == true ]] || { echo 'blisp: web build source must end with web.static.site(...)' >&2; return 1; }
+  bl_prop_get_key "$site" files; files=$RET
+  [[ ${BL_TYPE[$files]-} == array ]] || { echo 'blisp: invalid web.static.site() files payload' >&2; return 1; }
+
+  mkdir -p -- "$out" || return
+  count=${BL_ARR_LEN[$files]-0}
+  for ((i=0;i<count;++i)); do
+    bl_prop_get_key "$files" "$i"; entry=$RET
+    [[ ${BL_TYPE[$entry]-} == object ]] || { echo 'blisp: invalid static file entry' >&2; return 1; }
+
+    bl_prop_get_key "$entry" __web_static_file; marker=$RET
+    [[ $marker == true ]] || { echo 'blisp: invalid static file entry' >&2; return 1; }
+    bl_prop_get_key "$entry" path; pathv=$RET
+    [[ ${BL_TYPE[$pathv]-} == string ]] || { echo 'blisp: static output path must be a string' >&2; return 1; }
+    bl_string_value "$pathv" || return; path=$RET
+    web_build_path_valid "$path" || { echo "blisp: unsafe static output path: $path" >&2; return 1; }
+
+    bl_prop_get_key "$entry" content; content=$RET
+    [[ ${BL_TYPE[$content]-} == string ]] || { echo "blisp: static file content must be a string: $path" >&2; return 1; }
+
+    dest="$out/$path"
+    mkdir -p -- "${dest%/*}" || return
+    bl_string_write_path "$content" "$dest" || return
+  done
+
+  printf '%s\n' "$out"
+}
+
+cmd_web() {
+  (($#)) || { usage >&2; return 2; }
+  local sub=$1; shift
+  case $sub in
+    build) cmd_web_build "$@" ;;
+    *) echo "blisp: unknown web command: $sub" >&2; usage >&2; return 2 ;;
+  esac
+}
+
 cmd_repl() {
   bl_runtime_init
   load_stdlib_interpreted || return
@@ -292,6 +371,7 @@ main() {
     eval) cmd_eval "$@" ;;
     evalx) cmd_evalx "$@" ;;
     compile) cmd_compile "$@" ;;
+    web) cmd_web "$@" ;;
     repl) cmd_repl "$@" ;;
     replx) cmd_replx "$@" ;;
     -h|--help|help) usage ;;

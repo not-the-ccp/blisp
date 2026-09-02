@@ -42,6 +42,7 @@ let page = web.static.page({
   )
 });
 
-println(page);
-println("\n--- app.css ---");
-println(css.render(styles));
+web.static.site(
+  web.static.file("index.html", page),
+  web.static.file("app.css", css.render(styles))
+);
