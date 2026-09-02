@@ -22,4 +22,24 @@ t.test("page composes a complete document", fn() {
   testing.equal(page.contains(mainMarkup), true, null);
 });
 
+t.test("site values preserve declared output files", fn() {
+  let site = web.static.site(
+    web.static.file("index.html", "page"),
+    [web.static.file("assets/app.css", "css")]
+  );
+  testing.equal(site.__web_static_site, true, null);
+  testing.equal(site.files.length, 2, null);
+  testing.equal(site.files[0].path, "index.html", null);
+  testing.equal(site.files[1].content, "css", null);
+});
+
+t.test("site values reject unsafe and duplicate paths", fn() {
+  testing.throws(fn() { web.static.file("../index.html", "x"); }, :webStatic);
+  testing.throws(fn() { web.static.file("/index.html", "x"); }, :webStatic);
+  testing.throws(fn() { web.static.file("assets//app.css", "x"); }, :webStatic);
+  testing.throws(fn() {
+    web.static.site(web.static.file("index.html", "a"), web.static.file("index.html", "b"));
+  }, :webStatic);
+});
+
 t.report();
