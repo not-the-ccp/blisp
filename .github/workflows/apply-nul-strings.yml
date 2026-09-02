@@ -1,4 +1,5 @@
 name: Apply lossless string representation checkpoint
+# Re-run after unified interpreter/compiler arity semantics.
 
 on:
   push:
