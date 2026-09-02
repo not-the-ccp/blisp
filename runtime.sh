@@ -9,6 +9,11 @@ declare -Ag BL_TYPE=() BL_A=() BL_B=() BL_C=()
 declare -Ag BL_PROP=() BL_PROTO=() BL_KEY_COUNT=() BL_KEY_AT=() BL_ARR_LEN=()
 # Bytes are stored byte-by-byte because Bash variables cannot contain NUL.
 declare -Ag BL_BYTES_LEN=() BL_BYTE_AT=()
+# Strings are semantically valid Unicode text. Ordinary strings may keep a raw
+# Bash fast-path, but strings that Bash cannot represent losslessly (notably
+# embedded U+0000) use canonical lowercase UTF-8 hex in BL_STR_HEX. Runtime
+# code must use the helpers below rather than assuming BL_A is the string.
+declare -Ag BL_STR_HEX=()
 BL_OBJECT_PROTO=nil
 BL_ARRAY_PROTO=nil
 BL_FUNCTION_PROTO=nil
@@ -33,7 +38,152 @@ bl_alloc() {
 bl_make_nil() { RET="nil"; }
 bl_make_bool() { [[ $1 == 0 || $1 == false || -z $1 ]] && RET="false" || RET="true"; }
 bl_make_int() { bl_alloc; BL_TYPE[$RET]=int; BL_A[$RET]=$1; }
-bl_make_string() { bl_alloc; BL_TYPE[$RET]=string; BL_A[$RET]=$1; [[ $BL_STRING_PROTO != nil ]] && BL_PROTO[$RET]=$BL_STRING_PROTO; }
+
+# Convert a Bash-held UTF-8 byte string to canonical hex without depending on
+# locale character semantics. Bash cannot hold NUL, so this helper is only for
+# already-materializable host text.
+bl_text_to_utf8_hex() {
+  local s=$1 out= i c ord hx; local LC_ALL=C
+  for ((i=0;i<${#s};++i)); do
+    c=${s:i:1}; printf -v ord '%d' "'$c"; printf -v hx '%02x' "$ord"; out+=$hx
+  done
+  RET=$out
+}
+
+BL_UTF8_CP_COUNT=0
+bl_utf8_validate_hex() {
+  local hex=${1,,} n=${#1} i=0 count=0 b1 b2 b3 b4
+  (( n % 2 == 0 )) && [[ $hex != *[!0-9a-f]* ]] || return 1
+  while (( i < n )); do
+    b1=$((16#${hex:i:2}))
+    if (( b1 <= 0x7f )); then ((i+=2)) || true
+    elif (( b1 >= 0xc2 && b1 <= 0xdf )); then
+      (( i+4 <= n )) || return 1; b2=$((16#${hex:i+2:2})); (( b2>=0x80 && b2<=0xbf )) || return 1; ((i+=4)) || true
+    elif (( b1 >= 0xe0 && b1 <= 0xef )); then
+      (( i+6 <= n )) || return 1; b2=$((16#${hex:i+2:2})); b3=$((16#${hex:i+4:2}))
+      (( b3>=0x80 && b3<=0xbf )) || return 1
+      if (( b1 == 0xe0 )); then (( b2>=0xa0 && b2<=0xbf )) || return 1
+      elif (( b1 == 0xed )); then (( b2>=0x80 && b2<=0x9f )) || return 1
+      else (( b2>=0x80 && b2<=0xbf )) || return 1; fi
+      ((i+=6)) || true
+    elif (( b1 >= 0xf0 && b1 <= 0xf4 )); then
+      (( i+8 <= n )) || return 1; b2=$((16#${hex:i+2:2})); b3=$((16#${hex:i+4:2})); b4=$((16#${hex:i+6:2}))
+      (( b3>=0x80 && b3<=0xbf && b4>=0x80 && b4<=0xbf )) || return 1
+      if (( b1 == 0xf0 )); then (( b2>=0x90 && b2<=0xbf )) || return 1
+      elif (( b1 == 0xf4 )); then (( b2>=0x80 && b2<=0x8f )) || return 1
+      else (( b2>=0x80 && b2<=0xbf )) || return 1; fi
+      ((i+=8)) || true
+    else return 1; fi
+    ((count++)) || true
+  done
+  BL_UTF8_CP_COUNT=$count
+}
+
+BL_HEX_ZERO_AT=-1
+bl_hex_find_zero_byte() {
+  local hex=$1 i
+  BL_HEX_ZERO_AT=-1
+  for ((i=0;i<${#hex};i+=2)); do [[ ${hex:i:2} == 00 ]] && { BL_HEX_ZERO_AT=$i; return 0; }; done
+  return 1
+}
+bl_hex_has_zero_byte() { bl_hex_find_zero_byte "$1"; }
+
+bl_utf8_hex_to_text() {
+  local hex=${1,,} out= i pair ch
+  bl_hex_has_zero_byte "$hex" && return 1
+  for ((i=0;i<${#hex};i+=2)); do pair=${hex:i:2}; printf -v ch '%b' "\x$pair"; out+=$ch; done
+  RET=$out
+}
+
+bl_make_string_from_hex() {
+  local hex=${1,,}
+  bl_utf8_validate_hex "$hex" || { bl_raise_error encoding 'invalid UTF-8'; return; }
+  bl_alloc; local out=$RET raw=
+  BL_TYPE[$out]=string
+  if bl_hex_has_zero_byte "$hex"; then BL_STR_HEX[$out]=$hex; BL_A[$out]=
+  else bl_utf8_hex_to_text "$hex" || return; raw=$RET; BL_A[$out]=$raw; fi
+  [[ $BL_STRING_PROTO != nil ]] && BL_PROTO[$out]=$BL_STRING_PROTO
+  RET=$out
+}
+
+bl_make_string() {
+  bl_text_to_utf8_hex "$1"; local hex=$RET
+  bl_make_string_from_hex "$hex"
+}
+
+bl_string_hex() {
+  local v=$1
+  [[ ${BL_TYPE[$v]-} == string ]] || { printf 'BLisp: expected string, got ' >&2; bl_repr "$v" >&2; printf '\n' >&2; return 1; }
+  if [[ -v 'BL_STR_HEX[$v]' ]]; then RET=${BL_STR_HEX[$v]}; else bl_text_to_utf8_hex "${BL_A[$v]}"; fi
+}
+
+# Materialize a string for a host API that itself requires a C/Bash string.
+# U+0000 is supported by BLisp; only the host boundary rejects it where the
+# underlying OS/Bash interface cannot represent it.
+bl_string_value() {
+  local v=$1
+  bl_string_hex "$v" || return; local hex=$RET
+  if bl_hex_has_zero_byte "$hex"; then echo 'BLisp: this host API cannot accept a string containing U+0000' >&2; return 1; fi
+  if [[ ! -v 'BL_STR_HEX[$v]' ]]; then RET=${BL_A[$v]}; return; fi
+  bl_utf8_hex_to_text "$hex" || return
+}
+
+bl_string_write_fd() {
+  local v=$1 fd=$2 i pair esc= chunk=0
+  bl_string_hex "$v" || return; local hex=$RET
+  for ((i=0;i<${#hex};i+=2)); do
+    pair=${hex:i:2}; esc+="\\x$pair"; ((++chunk)) || true
+    if ((chunk>=2048)); then printf '%b' "$esc" >&"$fd" || return; esc=; chunk=0; fi
+  done
+  [[ -z $esc ]] || printf '%b' "$esc" >&"$fd"
+}
+bl_string_write_path() { local v=$1 path=$2 fd; : > "$path" || return; exec {fd}>"$path" || return; bl_string_write_fd "$v" "$fd"; local st=$?; exec {fd}>&-; return $st; }
+
+bl_utf8_hex_offset_for_cp() {
+  local hex=$1 target=$2 i=0 cp=0 n=${#1} b step
+  (( target >= 0 )) || return 1
+  while (( i < n && cp < target )); do
+    b=$((16#${hex:i:2}))
+    if ((b<=0x7f)); then step=2; elif ((b<=0xdf)); then step=4; elif ((b<=0xef)); then step=6; else step=8; fi
+    ((i+=step, cp++)) || true
+  done
+  (( cp == target )) || return 1
+  RET=$i
+}
+bl_string_cp_count() { bl_string_hex "$1" || return; bl_utf8_validate_hex "$RET" || return; bl_make_int "$BL_UTF8_CP_COUNT"; }
+bl_string_slice_value() {
+  local v=$1 start=$2 end=$3
+  bl_string_hex "$v" || return; local hex=$RET
+  bl_utf8_validate_hex "$hex" || return; local n=$BL_UTF8_CP_COUNT
+  ((start<0)) && start=$((n+start)); ((end<0)) && end=$((n+end)); ((start<0)) && start=0; ((end>n)) && end=$n; ((end<start)) && end=$start
+  bl_utf8_hex_offset_for_cp "$hex" "$start" || return; local a=$RET
+  bl_utf8_hex_offset_for_cp "$hex" "$end" || return; local b=$RET
+  bl_make_string_from_hex "${hex:a:b-a}"
+}
+bl_string_at_value() {
+  local v=$1 idx=$2
+  bl_string_hex "$v" || return; local hex=$RET
+  bl_utf8_validate_hex "$hex" || return; local n=$BL_UTF8_CP_COUNT
+  ((idx>=0 && idx<n)) || { bl_make_string ''; return; }
+  bl_utf8_hex_offset_for_cp "$hex" "$idx" || return; local a=$RET
+  bl_utf8_hex_offset_for_cp "$hex" "$((idx+1))" || return; local b=$RET
+  bl_make_string_from_hex "${hex:a:b-a}"
+}
+bl_string_index_of_values() {
+  local sv=$1 nv=$2
+  bl_string_hex "$sv" || return; local h=$RET
+  bl_string_hex "$nv" || return; local needle=$RET
+  [[ -n $needle ]] || { bl_make_int 0; return; }
+  local off=0 cp=0 n=${#h} b step
+  while ((off<=n-${#needle})); do
+    if [[ ${h:off:${#needle}} == "$needle" ]]; then bl_make_int "$cp"; return; fi
+    ((off<n)) || break
+    b=$((16#${h:off:2})); if ((b<=0x7f)); then step=2; elif ((b<=0xdf)); then step=4; elif ((b<=0xef)); then step=6; else step=8; fi
+    ((off+=step, cp++)) || true
+  done
+  bl_make_int -1
+}
+
 bl_make_bytes() {
   local -a xs=("$@")
   bl_alloc; local out=$RET i b
@@ -98,12 +248,6 @@ bl_truthy() { [[ $1 != false && $1 != nil ]]; }
 bl_int_value() {
   local v=$1
   [[ ${BL_TYPE[$v]-} == int ]] || { printf 'BLisp: expected integer, got ' >&2; bl_repr "$v" >&2; printf '\n' >&2; return 1; }
-  RET=${BL_A[$v]}
-}
-
-bl_string_value() {
-  local v=$1
-  [[ ${BL_TYPE[$v]-} == string ]] || { printf 'BLisp: expected string, got ' >&2; bl_repr "$v" >&2; printf '\n' >&2; return 1; }
   RET=${BL_A[$v]}
 }
 
@@ -185,10 +329,18 @@ bl_env_set() {
 }
 
 # Printer.
-bl_escape_string() {
-  local s=$1
-  s=${s//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/\\n}; s=${s//$'\t'/\\t}; s=${s//$'\r'/\\r}
-  RET=$s
+bl_escape_string_value() {
+  local v=$1 i pair out= ch
+  bl_string_hex "$v" || return; local hex=$RET
+  for ((i=0;i<${#hex};i+=2)); do
+    pair=${hex:i:2}
+    case $pair in
+      00) out+='\0' ;; 09) out+='\t' ;; 0a) out+='\n' ;; 0d) out+='\r' ;;
+      22) out+='\"' ;; 5c) out+='\\' ;;
+      *) printf -v ch '%b' "\x$pair"; out+=$ch ;;
+    esac
+  done
+  RET=$out
 }
 
 bl_repr() {
@@ -203,7 +355,7 @@ bl_repr() {
       for ((__bi=0;__bi<__bn;++__bi)); do ((__bi)) && printf ' '; printf '%02x' "${BL_BYTE_AT["$v|$__bi"]}"; done
       printf ']'
       ;;
-    string) bl_escape_string "${BL_A[$v]}"; printf '"%s"' "$RET" ;;
+    string) bl_escape_string_value "$v"; printf '"%s"' "$RET" ;;
     symbol)
       if [[ -n ${BL_C[$v]-} ]]; then printf '#<generated:%s>' "${BL_C[$v]}"
       else printf '%s' "${BL_A[$v]}"; fi
@@ -241,7 +393,7 @@ bl_repr() {
 
 bl_display() {
   local v=$1
-  if [[ ${BL_TYPE[$v]-} == string ]]; then printf '%s' "${BL_A[$v]}"; else bl_repr "$v"; fi
+  if [[ ${BL_TYPE[$v]-} == string ]]; then bl_string_write_fd "$v" 1; else bl_repr "$v"; fi
 }
 
 # Lexer/parser. Tokens are stored as strings; strings are prefixed S:, symbols Y:.
@@ -249,7 +401,7 @@ declare -ag BL_TOKENS=()
 BL_TPOS=0
 
 bl_lex() {
-  local src=$1 i=0 n=${#1} c tok buf esc
+  local src=$1 i=0 n=${#1} c tok buf esc hx
   BL_TOKENS=()
   while (( i < n )); do
     c=${src:i:1}
@@ -266,11 +418,14 @@ bl_lex() {
           if [[ $c == '\' ]]; then
             (( i<n )) || { echo 'BLisp: unterminated string escape' >&2; return 1; }
             esc=${src:i:1}; ((i++)) || true
-            case $esc in n) buf+=$'\n';; t) buf+=$'\t';; r) buf+=$'\r';; '"') buf+='"';; '\') buf+='\';; *) buf+="$esc";; esac
-          else buf+="$c"; fi
+            case $esc in
+              n) buf+=0a;; t) buf+=09;; r) buf+=0d;; 0) buf+=00;; '"') buf+=22;; '\') buf+=5c;;
+              *) bl_text_to_utf8_hex "$esc"; buf+=$RET;;
+            esac
+          else bl_text_to_utf8_hex "$c"; buf+=$RET; fi
         done
         [[ $c == '"' ]] || { echo 'BLisp: unterminated string' >&2; return 1; }
-        BL_TOKENS+=("S:$buf")
+        BL_TOKENS+=("H:$buf")
         ;;
       *)
         buf=
@@ -307,6 +462,7 @@ bl_parse_one() {
       bl_cons "$q" nil; local tail=$RET
       bl_cons "$qs" "$tail"
       ;;
+    H:*) bl_make_string_from_hex "${tok:2}" ;;
     S:*) bl_make_string "${tok:2}" ;;
     Y:*)
       local atom=${tok:2}
@@ -615,7 +771,11 @@ bl_prop_key() {
   local v=$1
   case $v in true|false|nil) RET=$v; return;; esac
   case ${BL_TYPE[$v]-} in
-    string|symbol|int) RET=${BL_A[$v]} ;;
+    string)
+      bl_string_hex "$v" || return; local __kh=$RET
+      if [[ -v 'BL_STR_HEX[$v]' ]]; then RET=$'\x1e'"$__kh"
+      else bl_utf8_hex_to_text "$__kh" || return; local __kr=$RET; if [[ $__kr == $'\x1e'* || $__kr == *'|'* ]]; then RET=$'\x1e'"$__kh"; else RET=$__kr; fi; fi ;;
+    symbol|int) RET=${BL_A[$v]} ;;
     *) echo 'BLisp: property key must be string, symbol, or integer' >&2; return 1 ;;
   esac
 }
@@ -645,9 +805,10 @@ bl_prop_get_key() {
   if [[ ${BL_TYPE[$obj]-} == array && $key == length ]]; then bl_make_int "${BL_ARR_LEN[$obj]-0}"; return; fi
   if [[ ${BL_TYPE[$obj]-} == bytes && $key == length ]]; then bl_make_int "${BL_BYTES_LEN[$obj]-0}"; return; fi
   if [[ ${BL_TYPE[$obj]-} == bytes && $key =~ ^[0-9]+$ ]]; then local __bn=${BL_BYTES_LEN[$obj]-0}; if (( key>=0 && key<__bn )); then bl_make_int "${BL_BYTE_AT["$obj|$key"]}"; else RET=nil; fi; return; fi
-  if [[ ${BL_TYPE[$obj]-} == string && $key == length ]]; then bl_make_int "${#BL_A[$obj]}"; return; fi
+  if [[ ${BL_TYPE[$obj]-} == string && $key == length ]]; then bl_string_cp_count "$obj"; return; fi
   if [[ ${BL_TYPE[$obj]-} == string && $key =~ ^[0-9]+$ ]]; then
-    local i=$key s=${BL_A[$obj]}; (( i >= 0 && i < ${#s} )) && bl_make_string "${s:i:1}" || RET=nil; return
+    bl_string_hex "$obj" || return; local __sh=$RET; bl_utf8_validate_hex "$__sh" || return; local __sn=$BL_UTF8_CP_COUNT
+    if (( key >= 0 && key < __sn )); then bl_string_at_value "$obj" "$key"; else RET=nil; fi; return
   fi
   if [[ ${BL_TYPE[$obj]-} == range ]]; then
     local __rs=${BL_A[$obj]} __re=${BL_B[$obj]} __ri=${BL_C[$obj]-0} __step=1 __len
@@ -727,7 +888,7 @@ bl_iter_next() {
     case ${BL_TYPE[$src]-} in
       array) idx=${BL_B[$it]}; if ((idx>=${BL_ARR_LEN[$src]-0})); then BL_ITER_DONE=1; RET=nil; else bl_prop_get_key "$src" "$idx"; BL_B[$it]=$((idx+1)); fi ;;
       bytes) idx=${BL_B[$it]}; if ((idx>=${BL_BYTES_LEN[$src]-0})); then BL_ITER_DONE=1; RET=nil; else bl_make_int "${BL_BYTE_AT["$src|$idx"]}"; BL_B[$it]=$((idx+1)); fi ;;
-      string) idx=${BL_B[$it]}; local raw=${BL_A[$src]}; if ((idx>=${#raw})); then BL_ITER_DONE=1; RET=nil; else bl_make_string "${raw:idx:1}"; BL_B[$it]=$((idx+1)); fi ;;
+      string) idx=${BL_B[$it]}; bl_string_hex "$src" || return; local __sh=$RET; bl_utf8_validate_hex "$__sh" || return; if ((idx>=BL_UTF8_CP_COUNT)); then BL_ITER_DONE=1; RET=nil; else bl_string_at_value "$src" "$idx"; BL_B[$it]=$((idx+1)); fi ;;
       range)
         idx=${BL_B[$it]}; local __end=${BL_B[$src]} __inc=${BL_C[$src]-0} __step=1
         ((${BL_A[$src]} > __end)) && __step=-1
@@ -769,23 +930,21 @@ bl_iter_values() {
 declare -ag BL_ITER_RESULT=()
 
 bl_value_to_string() {
-  local v=$1 fn out
-  case $v in nil|true|false) RET=$v; return;; esac
+  local v=$1 fn tmp
   case ${BL_TYPE[$v]-} in
-    string|int|float) RET=${BL_A[$v]} ;;
-    symbol) RET=${BL_C[$v]-${BL_A[$v]}} ;;
+    string) RET=$v; return ;;
+    int|float) bl_make_string "${BL_A[$v]}"; return ;;
+    symbol) bl_make_string "${BL_C[$v]-${BL_A[$v]}}"; return ;;
     object|array|bytes|builtin|closure|compiled|bound)
       bl_prop_get_key "$v" __str__; fn=$RET
       if [[ $fn != nil ]]; then
         bl_apply_this "$fn" "$v" || return
         [[ ${BL_TYPE[$RET]-} == string ]] || { echo 'BLisp: __str__ must return string' >&2; return 1; }
-        RET=${BL_A[$RET]}
-      else
-        local tmp; tmp=$(bl_repr "$v"); RET=$tmp
-      fi
-      ;;
-    *) local tmp; tmp=$(bl_repr "$v"); RET=$tmp ;;
+        return
+      fi ;;
   esac
+  case $v in nil|true|false) bl_make_string "$v"; return;; esac
+  tmp=$(bl_repr "$v"); bl_make_string "$tmp"
 }
 
 bl_builtin_js_add() { bl_builtin_add "$@"; }
@@ -821,7 +980,7 @@ bl_builtin_len() {
   bl_expect_arity $# 1 len || return
   local v=$1 n=0 cur fn
   case ${BL_TYPE[$v]-} in
-    string) bl_make_int "${#BL_A[$v]}" ;;
+    string) bl_string_cp_count "$v" ;;
     bytes) bl_make_int "${BL_BYTES_LEN[$v]-0}" ;;
     array) bl_make_int "${BL_ARR_LEN[$v]-0}" ;;
     range)
@@ -873,7 +1032,7 @@ bl_builtin_set_proto() {
 bl_builtin_keys() {
   bl_expect_arity $# 1 keys || return
   local obj=$1 n=${BL_KEY_COUNT[$1]-0} i k; local -a vals=()
-  for ((i=0;i<n;++i)); do k=${BL_KEY_AT["$obj|$i"]}; [[ -v 'BL_PROP["$obj|$k"]' ]] || continue; bl_make_string "$k"; vals+=("$RET"); done
+  for ((i=0;i<n;++i)); do k=${BL_KEY_AT["$obj|$i"]}; [[ -v 'BL_PROP["$obj|$k"]' ]] || continue; if [[ $k == $'\x1e'* ]]; then bl_make_string_from_hex "${k:1}"; else bl_make_string "$k"; fi; vals+=("$RET"); done
   bl_make_array "${vals[@]}"
 }
 bl_builtin_object_merge() {
@@ -1009,7 +1168,7 @@ bl_builtin_entries() {
   local obj=$1 i k; local count=${BL_KEY_COUNT[$1]-0}; local -a out=()
   for ((i=0;i<count;++i)); do
     k=${BL_KEY_AT["$obj|$i"]-}; [[ -n $k && -v 'BL_PROP["$obj|$k"]' ]] || continue
-    bl_make_string "$k"; local kv=$RET; bl_make_array "$kv" "${BL_PROP["$obj|$k"]}"; out+=("$RET")
+    if [[ $k == $'\x1e'* ]]; then bl_make_string_from_hex "${k:1}"; else bl_make_string "$k"; fi; local kv=$RET; bl_make_array "$kv" "${BL_PROP["$obj|$k"]}"; out+=("$RET")
   done
   bl_make_array "${out[@]}"
 }
@@ -1052,8 +1211,8 @@ bl_builtin_bytes() {
     case ${BL_TYPE[$v]-} in
       bytes) n=${BL_BYTES_LEN[$v]-0}; local -a copy=(); for ((i=0;i<n;++i)); do copy+=("${BL_BYTE_AT["$v|$i"]}"); done; bl_make_bytes "${copy[@]}"; return ;;
       string)
-        s=${BL_A[$v]}; local -a out=(); local LC_ALL=C
-        for ((i=0;i<${#s};++i)); do printf -v ord '%d' "'${s:i:1}"; out+=("$ord"); done
+        bl_string_hex "$v" || return; local hex=$RET pair; local -a out=()
+        for ((i=0;i<${#hex};i+=2)); do pair=${hex:i:2}; out+=("$((16#$pair))"); done
         bl_make_bytes "${out[@]}"; return ;;
       array|cons) bl_iter_values "$v" || return; bl_make_bytes_from_values "${BL_ITER_RESULT[@]}"; return ;;
     esac
@@ -1074,13 +1233,9 @@ bl_builtin_bytes_to_string() {
     bl_string_value "$1" || return; local enc=${RET,,}
     case $enc in utf-8|utf8) ;; *) bl_raise_error encoding "unsupported text encoding: $RET"; return ;; esac
   fi
-  local i n=${BL_BYTES_LEN[$b]-0} x esc= raw
-  for ((i=0;i<n;++i)); do
-    x=${BL_BYTE_AT["$b|$i"]}
-    ((x!=0)) || { bl_raise_error encoding 'cannot decode NUL-containing bytes into a Bash-backed string'; return; }
-    printf -v esc '%s\\%03o' "$esc" "$x"
-  done
-  printf -v raw '%b' "$esc"; bl_make_string "$raw"
+  local i n=${BL_BYTES_LEN[$b]-0} x hx hex=
+  for ((i=0;i<n;++i)); do x=${BL_BYTE_AT["$b|$i"]}; printf -v hx '%02x' "$x"; hex+=$hx; done
+  bl_make_string_from_hex "$hex"
 }
 bl_builtin_str_encode() {
   local s=$1; shift; bl_expect_max_arity $# 1 string.encode || return
@@ -1144,7 +1299,7 @@ bl_hash_value() {
       local __norm
       __norm=$(awk -v x="${BL_A[$v]}" 'BEGIN{if(x==int(x)) printf "%.0f",x; else printf "%.17g",x}') || return
       if [[ $__norm =~ ^-?[0-9]+$ ]]; then BL_HASH=$__norm; else bl_hash_text "f:$__norm"; fi ;;
-    string) bl_hash_text "s:${BL_A[$v]}" ;;
+    string) bl_string_hex "$v" || return; bl_hash_text "s:$RET" ;;
     symbol) bl_hash_text "y:${BL_A[$v]}" ;;
     range) bl_hash_text "r:${BL_A[$v]}:${BL_B[$v]}:${BL_C[$v]-0}" ;;
     bytes)
@@ -1355,7 +1510,7 @@ bl_builtin_process_run() {
   bl_option_get "$opts" cwd nil || { rm -rf "$tmp"; return; }; if [[ $RET != nil ]]; then bl_string_value "$RET" || { rm -rf "$tmp"; return; }; cwd=$RET; fi
   bl_option_get "$opts" stdin nil || { rm -rf "$tmp"; return; }; stdin=$RET
   bl_option_get "$opts" env nil || { rm -rf "$tmp"; return; }; envobj=$RET
-  if [[ $stdin == nil ]]; then : > "$in"; elif [[ ${BL_TYPE[$stdin]-} == bytes ]]; then bl_bytes_write_path "$stdin" "$in" || { rm -rf "$tmp"; return; }; elif [[ ${BL_TYPE[$stdin]-} == string ]]; then printf '%s' "${BL_A[$stdin]}" > "$in" || { rm -rf "$tmp"; return; }; else echo 'BLisp: process stdin must be string, bytes, or nil' >&2; rm -rf "$tmp"; return 1; fi
+  if [[ $stdin == nil ]]; then : > "$in"; elif [[ ${BL_TYPE[$stdin]-} == bytes ]]; then bl_bytes_write_path "$stdin" "$in" || { rm -rf "$tmp"; return; }; elif [[ ${BL_TYPE[$stdin]-} == string ]]; then bl_string_write_path "$stdin" "$in" || { rm -rf "$tmp"; return; }; else echo 'BLisp: process stdin must be string, bytes, or nil' >&2; rm -rf "$tmp"; return 1; fi
   bl_process_env_build_args "$envobj" || { rm -rf "$tmp"; return; }
   local -a envargs=("${BL_PROCESS_ENV_ARGS[@]}")
   local status
@@ -1378,7 +1533,7 @@ bl_builtin_process_spawn() {
   bl_option_get "$opts" cwd nil || { rm -rf "$tmp"; return; }; if [[ $RET != nil ]]; then bl_string_value "$RET" || { rm -rf "$tmp"; return; }; cwd=$RET; fi
   bl_option_get "$opts" stdin nil || { rm -rf "$tmp"; return; }; stdin=$RET
   bl_option_get "$opts" env nil || { rm -rf "$tmp"; return; }; envobj=$RET
-  if [[ $stdin == nil ]]; then : > "$in"; elif [[ ${BL_TYPE[$stdin]-} == bytes ]]; then bl_bytes_write_path "$stdin" "$in" || { rm -rf "$tmp"; return; }; elif [[ ${BL_TYPE[$stdin]-} == string ]]; then printf '%s' "${BL_A[$stdin]}" > "$in" || { rm -rf "$tmp"; return; }; else echo 'BLisp: process stdin must be string, bytes, or nil' >&2; rm -rf "$tmp"; return 1; fi
+  if [[ $stdin == nil ]]; then : > "$in"; elif [[ ${BL_TYPE[$stdin]-} == bytes ]]; then bl_bytes_write_path "$stdin" "$in" || { rm -rf "$tmp"; return; }; elif [[ ${BL_TYPE[$stdin]-} == string ]]; then bl_string_write_path "$stdin" "$in" || { rm -rf "$tmp"; return; }; else echo 'BLisp: process stdin must be string, bytes, or nil' >&2; rm -rf "$tmp"; return 1; fi
   bl_process_env_build_args "$envobj" || { rm -rf "$tmp"; return; }
   local -a envargs=("${BL_PROCESS_ENV_ARGS[@]}")
   (
@@ -1502,7 +1657,7 @@ bl_builtin_tcp_connect() {
 bl_builtin_tcp_write() {
   local obj=$1; shift; bl_expect_arity $# 1 tcp.write || return; bl_tcp_fd "$obj" || return; local fd=$BL_TCP_FD data=$1 n=0
   case ${BL_TYPE[$data]-} in
-    string) printf '%s' "${BL_A[$data]}" >&"$fd" || return; n=${#BL_A[$data]} ;;
+    string) bl_string_hex "$data" || return; local __sh=$RET; bl_string_write_fd "$data" "$fd" || return; n=$((${#__sh}/2)) ;;
     bytes) bl_bytes_write_fd "$data" "$fd" || return; n=${BL_BYTES_LEN[$data]-0} ;;
     *) echo 'BLisp: tcp.write expects string or bytes' >&2; return 1 ;;
   esac
@@ -1562,7 +1717,7 @@ bl_gc_scan_ids() {
 }
 bl_gc_roots() {
   BL_GC_VMARK=(); BL_GC_EMARK=(); bl_gc_mark_env "$BL_GLOBAL_ENV"
-  local name decl x; local -a excluded=(BL_TYPE BL_A BL_B BL_C BL_PROP BL_PROTO BL_KEY_COUNT BL_KEY_AT BL_ARR_LEN BL_BYTES_LEN BL_BYTE_AT BL_ENV_PARENT BL_ENV_BIND BL_ENV_CONST BL_GC_VMARK BL_GC_EMARK)
+  local name decl x; local -a excluded=(BL_TYPE BL_A BL_B BL_C BL_PROP BL_PROTO BL_KEY_COUNT BL_KEY_AT BL_ARR_LEN BL_BYTES_LEN BL_BYTE_AT BL_STR_HEX BL_ENV_PARENT BL_ENV_BIND BL_ENV_CONST BL_GC_VMARK BL_GC_EMARK)
   local ex skip
   while IFS= read -r name; do
     skip=0; for ex in "${excluded[@]}"; do [[ $name == "$ex" ]] && { skip=1; break; }; done; ((skip)) && continue
@@ -1578,7 +1733,7 @@ bl_gc_collect() {
   local v e key freedv=0 freede=0
   for v in "${!BL_TYPE[@]}"; do
     [[ -v 'BL_GC_VMARK[$v]' ]] && continue
-    unset 'BL_TYPE[$v]' 'BL_A[$v]' 'BL_B[$v]' 'BL_C[$v]' 'BL_PROTO[$v]' 'BL_KEY_COUNT[$v]' 'BL_ARR_LEN[$v]' 'BL_BYTES_LEN[$v]'
+    unset 'BL_TYPE[$v]' 'BL_A[$v]' 'BL_B[$v]' 'BL_C[$v]' 'BL_PROTO[$v]' 'BL_KEY_COUNT[$v]' 'BL_ARR_LEN[$v]' 'BL_BYTES_LEN[$v]' 'BL_STR_HEX[$v]'
     for key in "${!BL_PROP[@]}"; do [[ $key == "$v|"* ]] && unset 'BL_PROP[$key]'; done
     for key in "${!BL_KEY_AT[@]}"; do [[ $key == "$v|"* ]] && unset 'BL_KEY_AT[$key]'; done
     for key in "${!BL_BYTE_AT[@]}"; do [[ $key == "$v|"* ]] && unset 'BL_BYTE_AT[$key]'; done
@@ -1605,7 +1760,7 @@ bl_builtin_fn_bind() { local fn=$1; shift; bl_expect_min_arity $# 1 Function.bin
 # Array prototype methods.  Method builtins receive the receiver as argument 1.
 bl_builtin_arr_push() { local a=$1; shift; [[ ${BL_TYPE[$a]-} == array ]] || { echo 'BLisp: push receiver is not array' >&2; return 1; }; local n v; n=${BL_ARR_LEN[$a]-0}; for v in "$@"; do bl_prop_set_key "$a" "$n" "$v" >/dev/null; ((n++)) || true; done; bl_make_int "$n"; }
 bl_builtin_arr_pop() { local a=$1; shift; bl_expect_arity $# 0 pop || return; local n; n=${BL_ARR_LEN[$a]-0}; ((n)) || { RET=nil; return; }; ((n--)) || true; bl_prop_get_key "$a" "$n"; local v=$RET; unset 'BL_PROP["$a|$n"]'; BL_ARR_LEN[$a]=$n; RET=$v; }
-bl_builtin_arr_join() { local a=$1; shift; [[ ${BL_TYPE[$a]-} == array ]] || return 1; local sep=,; if (($#)); then bl_string_value "$1" || return; sep=$RET; fi; local out= i n; n=${BL_ARR_LEN[$a]-0}; for ((i=0;i<n;++i)); do ((i)) && out+=$sep; bl_prop_get_key "$a" "$i"; bl_value_to_string "$RET" || return; out+=$RET; done; bl_make_string "$out"; }
+bl_builtin_arr_join() { local a=$1; shift; [[ ${BL_TYPE[$a]-} == array ]] || return 1; local sepv; if (($#)); then sepv=$1; [[ ${BL_TYPE[$sepv]-} == string ]] || { echo 'BLisp: join separator must be string' >&2; return 1; }; else bl_make_string ','; sepv=$RET; fi; bl_string_hex "$sepv" || return; local seph=$RET out= i n; n=${BL_ARR_LEN[$a]-0}; for ((i=0;i<n;++i)); do ((i)) && out+=$seph; bl_prop_get_key "$a" "$i"; bl_value_to_string "$RET" || return; bl_string_hex "$RET" || return; out+=$RET; done; bl_make_string_from_hex "$out"; }
 bl_builtin_arr_map() { local a=$1; shift; bl_expect_arity $# 1 map || return; local fn=$1 i n; n=${BL_ARR_LEN[$a]-0}; local -a out=(); for ((i=0;i<n;++i)); do bl_prop_get_key "$a" "$i"; local v=$RET; bl_apply "$fn" "$v" || return; out+=("$RET"); done; bl_make_array "${out[@]}"; }
 bl_builtin_arr_filter() { local a=$1; shift; bl_expect_arity $# 1 filter || return; local fn=$1 i n; n=${BL_ARR_LEN[$a]-0}; local -a out=(); for ((i=0;i<n;++i)); do bl_prop_get_key "$a" "$i"; local v=$RET; bl_apply "$fn" "$v" || return; bl_truthy "$RET" && out+=("$v"); done; bl_make_array "${out[@]}"; }
 bl_builtin_arr_reduce() { local a=$1; shift; bl_expect_arity $# 2 reduce || return; local fn=$1 acc=$2 i n; n=${BL_ARR_LEN[$a]-0}; for ((i=0;i<n;++i)); do bl_prop_get_key "$a" "$i"; local v=$RET; bl_apply "$fn" "$acc" "$v" || return; acc=$RET; done; RET=$acc; }
@@ -1637,31 +1792,23 @@ bl_builtin_arr_sorted() {
   bl_make_array "${out[@]}"
 }
 
-# String.prototype-like methods.
-bl_builtin_str_includes() { local s=$1; shift; bl_expect_arity $# 1 includes || return; bl_string_value "$s" || return; local raw=$RET; bl_string_value "$1" || return; [[ $raw == *"$RET"* ]] && RET=true || RET=false; }
-bl_builtin_str_starts_with() { local s=$1; shift; bl_expect_arity $# 1 startsWith || return; bl_string_value "$s" || return; local raw=$RET; bl_string_value "$1" || return; [[ $raw == "$RET"* ]] && RET=true || RET=false; }
-bl_builtin_str_ends_with() { local s=$1; shift; bl_expect_arity $# 1 endsWith || return; bl_string_value "$s" || return; local raw=$RET; bl_string_value "$1" || return; [[ $raw == *"$RET" ]] && RET=true || RET=false; }
-bl_builtin_str_slice() { local s=$1; shift; bl_expect_min_arity $# 1 slice || return; bl_string_value "$s" || return; local raw=$RET n=${#RET}; bl_int_value "$1" || return; local start=$RET end=$n; if (($#>=2)); then bl_int_value "$2" || return; end=$RET; fi; ((start<0)) && start=$((n+start)); ((end<0)) && end=$((n+end)); ((start<0)) && start=0; ((end>n)) && end=$n; ((end<start)) && end=$start; bl_make_string "${raw:start:end-start}"; }
-bl_builtin_str_split() { local s=$1; shift; bl_expect_arity $# 1 split || return; bl_string_value "$s" || return; local raw=$RET; bl_string_value "$1" || return; local d=$RET; [[ -n $d ]] || { echo 'BLisp: split delimiter may not be empty' >&2; return 1; }; local -a out=(); local part; while [[ $raw == *"$d"* ]]; do part=${raw%%"$d"*}; bl_make_string "$part"; out+=("$RET"); raw=${raw#*"$d"}; done; bl_make_string "$raw"; out+=("$RET"); bl_make_array "${out[@]}"; }
-bl_builtin_str_upper() { local s=$1; shift; bl_expect_arity $# 0 toUpperCase || return; bl_string_value "$s" || return; bl_make_string "${RET^^}"; }
-bl_builtin_str_lower() { local s=$1; shift; bl_expect_arity $# 0 toLowerCase || return; bl_string_value "$s" || return; bl_make_string "${RET,,}"; }
-bl_builtin_str_repeat() { local s=$1; shift; bl_expect_arity $# 1 repeat || return; bl_string_value "$s" || return; local raw=$RET; bl_int_value "$1" || return; local n=$RET out= i; ((n>=0)) || { echo 'BLisp: repeat count must be nonnegative' >&2; return 1; }; for ((i=0;i<n;++i)); do out+=$raw; done; bl_make_string "$out"; }
-bl_builtin_str_char_at() { local s=$1; shift; bl_expect_arity $# 1 charAt || return; bl_string_value "$s" || return; local raw=$RET; bl_int_value "$1" || return; local i=$RET; if ((i<0 || i>=${#raw})); then bl_make_string ''; else bl_make_string "${raw:i:1}"; fi; }
-bl_builtin_str_index_of() {
-  local s=$1; shift; bl_expect_arity $# 1 string.indexOf || return
-  bl_string_value "$s" || return; local raw=$RET
-  bl_string_value "$1" || return; local needle=$RET
-  if [[ $needle == '' ]]; then bl_make_int 0; return; fi
-  local i max=$((${#raw}-${#needle}))
-  for ((i=0;i<=max;++i)); do
-    if [[ ${raw:i:${#needle}} == "$needle" ]]; then bl_make_int "$i"; return; fi
-  done
-  bl_make_int -1
-}
-bl_builtin_str_trim() { local s=$1; shift; bl_expect_arity $# 0 trim || return; bl_string_value "$s" || return; local raw=$RET; raw="${raw#"${raw%%[![:space:]]*}"}"; raw="${raw%"${raw##*[![:space:]]}"}"; bl_make_string "$raw"; }
-bl_builtin_str_lines() { local s=$1; shift; bl_expect_arity $# 0 lines || return; bl_string_value "$s" || return; local raw=$RET; bl_make_string $'\n'; local nl=$RET; bl_builtin_string_split "$s" "$nl" || return; bl_list_to_array "$RET" || return; bl_make_array "${BL_LIST_RESULT[@]}"; }
-bl_builtin_str_words() { local s=$1; shift; bl_expect_arity $# 0 words || return; bl_string_value "$s" || return; local raw=${RET//$'\n'/ }; local -a ws=(); read -r -a ws <<< "$raw"; local -a out=(); local w; for w in "${ws[@]}"; do bl_make_string "$w"; out+=("$RET"); done; bl_make_array "${out[@]}"; }
-bl_builtin_to_string() { bl_expect_arity $# 1 String || return; bl_value_to_string "$1" || return; local raw=$RET; bl_make_string "$raw"; }
+# String.prototype-like methods. Core operations work on canonical UTF-8 so
+# embedded U+0000 is no different from any other code point.
+bl_builtin_str_includes() { local s=$1; shift; bl_expect_arity $# 1 includes || return; bl_string_index_of_values "$s" "$1" || return; (( ${BL_A[$RET]} >= 0 )) && RET=true || RET=false; }
+bl_builtin_str_starts_with() { local s=$1; shift; bl_expect_arity $# 1 startsWith || return; bl_string_hex "$s" || return; local h=$RET; bl_string_hex "$1" || return; [[ $h == "$RET"* ]] && RET=true || RET=false; }
+bl_builtin_str_ends_with() { local s=$1; shift; bl_expect_arity $# 1 endsWith || return; bl_string_hex "$s" || return; local h=$RET; bl_string_hex "$1" || return; [[ $h == *"$RET" ]] && RET=true || RET=false; }
+bl_builtin_str_slice() { local s=$1; shift; bl_expect_min_arity $# 1 slice || return; bl_string_cp_count "$s" || return; local n=${BL_A[$RET]}; bl_int_value "$1" || return; local start=$RET end=$n; if (($#>=2)); then bl_int_value "$2" || return; end=$RET; fi; bl_string_slice_value "$s" "$start" "$end"; }
+bl_builtin_str_split() { local s=$1; shift; bl_expect_arity $# 1 split || return; bl_string_hex "$s" || return; local h=$RET; bl_string_hex "$1" || return; local d=$RET; [[ -n $d ]] || { echo 'BLisp: split delimiter may not be empty' >&2; return 1; }; local -a out=(); local off b step found part; while :; do off=0; found=-1; while ((off<=${#h}-${#d})); do if [[ ${h:off:${#d}} == "$d" ]]; then found=$off; break; fi; ((off<${#h})) || break; b=$((16#${h:off:2})); if ((b<=0x7f)); then step=2; elif ((b<=0xdf)); then step=4; elif ((b<=0xef)); then step=6; else step=8; fi; ((off+=step)) || true; done; ((found>=0)) || break; part=${h:0:found}; bl_make_string_from_hex "$part"; out+=("$RET"); h=${h:found+${#d}}; done; bl_make_string_from_hex "$h"; out+=("$RET"); bl_make_array "${out[@]}"; }
+bl_string_case_map() { local s=$1 mode=$2 rest part raw mapped out= idx; bl_string_hex "$s" || return; rest=$RET; while bl_hex_find_zero_byte "$rest"; do idx=$BL_HEX_ZERO_AT; part=${rest:0:idx}; rest=${rest:idx+2}; bl_utf8_hex_to_text "$part" || return; raw=$RET; if [[ $mode == upper ]]; then mapped=${raw^^}; else mapped=${raw,,}; fi; bl_text_to_utf8_hex "$mapped"; out+="$RET"00; done; bl_utf8_hex_to_text "$rest" || return; raw=$RET; if [[ $mode == upper ]]; then mapped=${raw^^}; else mapped=${raw,,}; fi; bl_text_to_utf8_hex "$mapped"; out+=$RET; bl_make_string_from_hex "$out"; }
+bl_builtin_str_upper() { local s=$1; shift; bl_expect_arity $# 0 toUpperCase || return; bl_string_case_map "$s" upper; }
+bl_builtin_str_lower() { local s=$1; shift; bl_expect_arity $# 0 toLowerCase || return; bl_string_case_map "$s" lower; }
+bl_builtin_str_repeat() { local s=$1; shift; bl_expect_arity $# 1 repeat || return; bl_string_hex "$s" || return; local h=$RET; bl_int_value "$1" || return; local n=$RET out= i; ((n>=0)) || { echo 'BLisp: repeat count must be nonnegative' >&2; return 1; }; for ((i=0;i<n;++i)); do out+=$h; done; bl_make_string_from_hex "$out"; }
+bl_builtin_str_char_at() { local s=$1; shift; bl_expect_arity $# 1 charAt || return; bl_int_value "$1" || return; bl_string_at_value "$s" "$RET"; }
+bl_builtin_str_index_of() { local s=$1; shift; bl_expect_arity $# 1 string.indexOf || return; bl_string_index_of_values "$s" "$1"; }
+bl_builtin_str_trim() { local s=$1; shift; bl_expect_arity $# 0 trim || return; bl_string_hex "$s" || return; local h=$RET start=0 end=${#RET} pair; while ((start<end)); do pair=${h:start:2}; case $pair in 09|0a|0b|0c|0d|20) ((start+=2)) || true;; *) break;; esac; done; while ((end>start)); do pair=${h:end-2:2}; case $pair in 09|0a|0b|0c|0d|20) ((end-=2)) || true;; *) break;; esac; done; bl_make_string_from_hex "${h:start:end-start}"; }
+bl_builtin_str_lines() { local s=$1; shift; bl_expect_arity $# 0 lines || return; bl_make_string_from_hex 0a; local nl=$RET; bl_builtin_str_split "$s" "$nl"; }
+bl_builtin_str_words() { local s=$1; shift; bl_expect_arity $# 0 words || return; bl_string_hex "$s" || return; local h=$RET token= pair i; local -a out=(); for ((i=0;i<${#h};i+=2)); do pair=${h:i:2}; case $pair in 09|0a|0b|0c|0d|20) if [[ -n $token ]]; then bl_make_string_from_hex "$token"; out+=("$RET"); token=; fi ;; *) token+=$pair ;; esac; done; if [[ -n $token ]]; then bl_make_string_from_hex "$token"; out+=("$RET"); fi; bl_make_array "${out[@]}"; }
+bl_builtin_to_string() { bl_expect_arity $# 1 String || return; bl_value_to_string "$1"; }
 bl_builtin_to_number() { bl_expect_arity $# 1 Number || return; case ${BL_TYPE[$1]-} in int|float) RET=$1; return;; esac; bl_string_value "$1" || return; if [[ $RET =~ ^[-+]?[0-9]+$ ]]; then bl_make_int "$RET"; elif [[ $RET =~ ^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$ ]]; then bl_make_float "$RET"; else echo 'BLisp: num() requires numeric text' >&2; return 1; fi; }
 bl_builtin_to_int() { bl_expect_arity $# 1 int || return; case ${BL_TYPE[$1]-} in int) RET=$1;; float) local x; x=$(awk -v x="${BL_A[$1]}" 'BEGIN{printf "%d", x}'); bl_make_int "$x";; string) bl_string_value "$1" || return; [[ $RET =~ ^[-+]?[0-9]+$ ]] || { echo 'BLisp: int() requires integer text' >&2; return 1; }; bl_make_int "$RET";; *) echo 'BLisp: int() expects number/string' >&2; return 1;; esac; }
 bl_builtin_to_float() { bl_expect_arity $# 1 float || return; case ${BL_TYPE[$1]-} in float) RET=$1;; int) bl_make_float "${BL_A[$1]}.0";; string) bl_string_value "$1" || return; [[ $RET =~ ^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$ ]] || { echo 'BLisp: float() requires numeric text' >&2; return 1; }; bl_make_float "$RET";; *) echo 'BLisp: float() expects number/string' >&2; return 1;; esac; }
@@ -1719,7 +1866,12 @@ bl_builtin_add() {
       for v in "$@"; do case ${BL_TYPE[$v]-} in int) ;; float) hasfloat=1;; *) echo 'BLisp: + does not coerce mixed types' >&2; return 1;; esac; if ((hasfloat)); then local aa=$acc; bl_float_bin + "$aa" "${BL_A[$v]}" || return; acc=${BL_A[$RET]}; else ((acc += BL_A[$v])) || true; fi; done
       ((hasfloat)) && bl_make_float "$acc" || bl_make_int "$acc" ;;
     string)
-      local out=; for v in "$@"; do [[ ${BL_TYPE[$v]-} == string ]] || { echo 'BLisp: + does not coerce mixed types' >&2; return 1; }; out+=${BL_A[$v]}; done; bl_make_string "$out" ;;
+    local out=; for v in "$@"; do
+      [[ ${BL_TYPE[$v]-} == string ]] || { echo 'BLisp: + does not coerce mixed types' >&2; return 1; }
+      bl_string_hex "$v" || return
+      out+=$RET
+    done
+    bl_make_string_from_hex "$out" ;;
     array)
       local -a out=(); local i n; for v in "$@"; do [[ ${BL_TYPE[$v]-} == array ]] || { echo 'BLisp: + does not coerce mixed types' >&2; return 1; }; n=${BL_ARR_LEN[$v]-0}; for ((i=0;i<n;++i)); do bl_prop_get_key "$v" "$i"; out+=("$RET"); done; done; bl_make_array "${out[@]}" ;;
     *) echo 'BLisp: + supports numbers, strings, arrays, or operator protocols' >&2; return 1 ;;
@@ -1774,7 +1926,7 @@ bl_builtin_num_eq() { bl_cmp_number '==' "$1" "$2"; }
 bl_compare_ordered() {
   local op=$1 a=$2 b=$3
   if [[ ${BL_TYPE[$a]-} == string && ${BL_TYPE[$b]-} == string ]]; then
-    local av=${BL_A[$a]} bv=${BL_A[$b]}; local LC_ALL=C ok=0
+    bl_string_hex "$a" || return; local av=$RET; bl_string_hex "$b" || return; local bv=$RET; local LC_ALL=C ok=0
     case $op in '<') [[ $av < $bv ]] && ok=1;; '<=') [[ $av < $bv || $av == "$bv" ]] && ok=1;; '>') [[ $av > $bv ]] && ok=1;; '>=') [[ $av > $bv || $av == "$bv" ]] && ok=1;; esac
     ((ok)) && RET=true || RET=false; return
   fi
@@ -1806,7 +1958,8 @@ bl_builtin_eqp() {
   bl_expect_arity $# 2 eq? || return
   if [[ $1 == "$2" ]]; then RET=true; return; fi
   local t1=${BL_TYPE[$1]-} t2=${BL_TYPE[$2]-}
-  if [[ $t1 == "$t2" && ( $t1 == int || $t1 == float || $t1 == string || $t1 == symbol ) && ${BL_A[$1]} == "${BL_A[$2]}" ]]; then RET=true; else RET=false; fi
+  if [[ $t1 == string && $t2 == string ]]; then bl_string_hex "$1" || return; local __a=$RET; bl_string_hex "$2" || return; [[ $__a == "$RET" ]] && RET=true || RET=false; return; fi
+  if [[ $t1 == "$t2" && ( $t1 == int || $t1 == float || $t1 == symbol ) && ${BL_A[$1]} == "${BL_A[$2]}" ]]; then RET=true; else RET=false; fi
 }
 # Structural equality is cycle-safe.  One top-level comparison owns a set of
 # already-observed value pairs; revisiting a pair means that branch is already
@@ -1825,7 +1978,8 @@ bl_equal_value_inner() {
   fi
   [[ $tx == "$ty" ]] || { RET=false; return; }
   case $tx in
-    int|float|string|symbol) [[ ${BL_A[$x]} == "${BL_A[$y]}" ]] && RET=true || RET=false ;;
+    string) bl_string_hex "$x" || return; local __sx=$RET; bl_string_hex "$y" || return; [[ $__sx == "$RET" ]] && RET=true || RET=false ;;
+    int|float|symbol) [[ ${BL_A[$x]} == "${BL_A[$y]}" ]] && RET=true || RET=false ;;
     range)
       [[ ${BL_A[$x]} == "${BL_A[$y]}" && ${BL_B[$x]} == "${BL_B[$y]}" && ${BL_C[$x]-0} == "${BL_C[$y]-0}" ]] && RET=true || RET=false ;;
     bytes)
@@ -1870,10 +2024,10 @@ bl_builtin_equalp() { bl_expect_arity $# 2 equal? || return; bl_equal_value "$1"
 bl_builtin_print() { local v; for v in "$@"; do bl_display "$v"; done; RET=nil; }
 bl_builtin_println() { local first=1 v; for v in "$@"; do ((first)) || printf ' '; bl_display "$v"; first=0; done; printf '\n'; RET=nil; }
 bl_builtin_repr() { bl_expect_arity $# 1 repr || return; local s; s=$(bl_repr "$1"); bl_make_string "$s"; }
-bl_builtin_string_append() { local out= v; for v in "$@"; do bl_string_value "$v" || return; out+=$RET; done; bl_make_string "$out"; }
+bl_builtin_string_append() { local out= v; for v in "$@"; do bl_string_hex "$v" || return; out+=$RET; done; bl_make_string_from_hex "$out"; }
 bl_builtin_number_to_string() { bl_expect_arity $# 1 number-to-string || return; bl_number_value "$1" || return; bl_make_string "$RET"; }
-bl_builtin_string_length() { bl_expect_arity $# 1 string-length || return; bl_string_value "$1" || return; bl_make_int "${#RET}"; }
-bl_builtin_string_eq() { bl_expect_arity $# 2 string=? || return; bl_string_value "$1" || return; local a=$RET; bl_string_value "$2" || return; [[ $a == "$RET" ]] && RET=true || RET=false; }
+bl_builtin_string_length() { bl_expect_arity $# 1 string-length || return; bl_string_cp_count "$1"; }
+bl_builtin_string_eq() { bl_expect_arity $# 2 string=? || return; bl_string_hex "$1" || return; local a=$RET; bl_string_hex "$2" || return; [[ $a == "$RET" ]] && RET=true || RET=false; }
 
 bl_builtin_string_to_number() {
   bl_expect_arity $# 1 string-to-number || return
@@ -1883,40 +2037,40 @@ bl_builtin_string_to_number() {
 }
 bl_builtin_substring() {
   bl_expect_arity $# 3 substring || return
-  bl_string_value "$1" || return; local s=$RET
   bl_int_value "$2" || return; local start=$RET
   bl_int_value "$3" || return; local end=$RET
-  (( start >= 0 && end >= start && end <= ${#s} )) || { echo 'BLisp: substring bounds' >&2; return 1; }
-  bl_make_string "${s:start:end-start}"
+  bl_string_cp_count "$1" || return; local n=${BL_A[$RET]}
+  (( start >= 0 && end >= start && end <= n )) || { echo 'BLisp: substring bounds' >&2; return 1; }
+  bl_string_slice_value "$1" "$start" "$end"
 }
 bl_builtin_string_split() {
   bl_expect_arity $# 2 string-split || return
-  bl_string_value "$1" || return; local s=$RET
-  bl_string_value "$2" || return; local d=$RET
+  bl_string_hex "$1" || return; local s=$RET
+  bl_string_hex "$2" || return; local d=$RET
   [[ -n $d ]] || { echo 'BLisp: string-split delimiter may not be empty' >&2; return 1; }
   local -a vals=(); local part
   while [[ $s == *"$d"* ]]; do
-    part=${s%%"$d"*}; bl_make_string "$part"; vals+=("$RET"); s=${s#*"$d"}
+    part=${s%%"$d"*}; bl_make_string_from_hex "$part"; vals+=("$RET"); s=${s#*"$d"}
   done
-  bl_make_string "$s"; vals+=("$RET")
+  bl_make_string_from_hex "$s"; vals+=("$RET")
   bl_list_from_array "${vals[@]}"
 }
 bl_builtin_string_join() {
   bl_expect_arity $# 2 string-join || return
   local list=$1
-  bl_string_value "$2" || return; local d=$RET out= first=1 cur=$list
+  bl_string_hex "$2" || return; local d=$RET out= first=1 cur=$list
   while [[ $cur != nil ]]; do
     [[ ${BL_TYPE[$cur]-} == cons ]] || { echo 'BLisp: string-join expects proper list' >&2; return 1; }
-    bl_string_value "${BL_A[$cur]}" || return
+    bl_string_hex "${BL_A[$cur]}" || return
     if (( first )); then out=$RET; first=0; else out+="$d$RET"; fi
     cur=${BL_B[$cur]}
   done
-  bl_make_string "$out"
+  bl_make_string_from_hex "$out"
 }
 bl_builtin_string_contains() {
   bl_expect_arity $# 2 string-contains? || return
-  bl_string_value "$1" || return; local s=$RET
-  bl_string_value "$2" || return; local needle=$RET
+  bl_string_hex "$1" || return; local s=$RET
+  bl_string_hex "$2" || return; local needle=$RET
   [[ $s == *"$needle"* ]] && RET=true || RET=false
 }
 
@@ -1925,13 +2079,11 @@ bl_builtin_error() { local v; printf 'BLisp error:' >&2; for v in "$@"; do print
 
 bl_builtin_read_file() {
   bl_expect_arity $# 1 read-file || return
-  bl_string_value "$1" || return; local path=$RET data
-  # Sentinel preserves trailing newlines that command substitution would otherwise strip.
-  data=$( { cat -- "$path" 2>/dev/null || exit $?; printf '\034'; } ) || { bl_raise_error io "cannot read text: $path"; return; }
-  data=${data%$'\034'}
-  bl_make_string "$data"
+  bl_string_value "$1" || return; local path=$RET
+  bl_bytes_read_path "$path" || { bl_raise_error io "cannot read text: $path"; return; }; local b=$RET
+  bl_builtin_bytes_to_string "$b"
 }
-bl_builtin_write_file() { bl_expect_arity $# 2 write-file || return; bl_string_value "$1" || return; local path=$RET; bl_string_value "$2" || return; local data=$RET; printf '%s' "$data" > "$path" 2>/dev/null || { bl_raise_error io "cannot write text: $path"; return; }; RET=nil; }
+bl_builtin_write_file() { bl_expect_arity $# 2 write-file || return; bl_string_value "$1" || return; local path=$RET; [[ ${BL_TYPE[$2]-} == string ]] || { echo 'BLisp: write-file expects string data' >&2; return 1; }; bl_string_write_path "$2" "$path" || { bl_raise_error io "cannot write text: $path"; return; }; RET=nil; }
 bl_builtin_argv() { local -a vs=(); local s; for s in "${BL_USER_ARGV[@]}"; do bl_make_string "$s"; vs+=("$RET"); done; bl_list_from_array "${vs[@]}"; }
 bl_builtin_args() { local -a vs=(); local s; for s in "${BL_USER_ARGV[@]}"; do bl_make_string "$s"; vs+=("$RET"); done; bl_make_array "${vs[@]}"; }
 declare -ag BL_USER_ARGV=()

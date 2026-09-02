@@ -1,0 +1,43 @@
+fn hexOf(s) { return s.encode("utf-8").hex(); }
+
+let nul = "\0";
+assert(nul.length == 1, "NUL counts as one code point");
+assert(hexOf(nul) == "00");
+
+let s = "A\0é💩B";
+assert(s.length == 5);
+assert(s[0] == "A");
+assert(s[1] == nul);
+assert(s[2] == "é");
+assert(s[3] == "💩");
+assert(hexOf(s.slice(1, 4)) == "00c3a9f09f92a9");
+
+let decoded = bytes([65, 0, 66]).decode("utf-8");
+assert(decoded == "A\0B");
+assert(hexOf(decoded + "!") == "41004221");
+assert(hash(decoded) == hash("A\0B"));
+assert(decoded.includes(nul));
+assert(decoded.indexOf(nul) == 1);
+assert(decoded.split(nul).join("|") == "A|B");
+assert(["x", nul, "y"].join("-").encode().hex() == "782d002d79");
+assert("a\0b".upper().encode().hex() == "410042");
+assert(" A\0B ".trim().encode().hex() == "410042");
+
+let obj = {};
+obj[nul] = 42;
+assert(obj[nul] == 42);
+assert(Object.keys(obj)[0] == nul);
+
+let bad = attempt(() => bytes([0xc0, 0x80]).decode("utf-8"));
+assert(!bad.ok);
+
+let path = "/tmp/blisp-nul-string-roundtrip.txt";
+writeFile(path, s);
+assert(readFile(path) == s);
+assert(readBytes(path).hex() == hexOf(s));
+
+let p = process.run(["bash", "-c", "cat"], {stdin: decoded});
+assert(p.status == 0);
+assert(p.stdout.hex() == "410042");
+
+println("string-nul: ok");

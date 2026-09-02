@@ -32,7 +32,7 @@ comp_quote_value() {
       local __i __n=${BL_BYTES_LEN[$v]-0} __hex= __hx
       for ((__i=0;__i<__n;++__i)); do printf -v __hx '%02x' "${BL_BYTE_AT["$v|$__i"]}"; __hex+=$__hx; done
       comp_q "$__hex"; comp_emit "bl_make_bytes_from_hex $COMP_REPLY" ;;
-    string) comp_q "${BL_A[$v]}"; comp_emit "bl_make_string $COMP_REPLY" ;;
+    string) bl_string_hex "$v" || return; comp_q "$RET"; comp_emit "bl_make_string_from_hex $COMP_REPLY" ;;
     symbol) comp_q "${BL_A[$v]}"; comp_emit "bl_make_symbol $COMP_REPLY" ;;
     cons)
       comp_quote_value "${BL_A[$v]}" || return
@@ -117,7 +117,7 @@ comp_expr() {
       local __i __n=${BL_BYTES_LEN[$expr]-0} __hex= __hx
       for ((__i=0;__i<__n;++__i)); do printf -v __hx '%02x' "${BL_BYTE_AT["$expr|$__i"]}"; __hex+=$__hx; done
       comp_q "$__hex"; comp_emit "bl_make_bytes_from_hex $COMP_REPLY"; return ;;
-    string) comp_q "${BL_A[$expr]}"; comp_emit "bl_make_string $COMP_REPLY"; return ;;
+    string) bl_string_hex "$expr" || return; comp_q "$RET"; comp_emit "bl_make_string_from_hex $COMP_REPLY"; return ;;
     symbol) comp_q "${BL_A[$expr]}"; comp_emit "bl_env_lookup \"\$$envvar\" $COMP_REPLY || return 1"; return ;;
     cons) ;;
     *) echo "BLisp compiler: invalid AST value $expr" >&2; return 1 ;;

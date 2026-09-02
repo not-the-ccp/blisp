@@ -240,17 +240,15 @@ sx_lex() {
       while ((i<n)); do
         c=${src:i:1}; ((i++)) || true
         [[ $c == "$q" ]] && break
-        if [[ $c == '\' ]]; then
+        if [[ $c == \\ ]]; then
           ((i<n)) || { sx_lex_error 'unterminated string escape'; return 1; }
           esc=${src:i:1}; ((i++)) || true
           case $esc in
-            n) buf+=$'\n';; t) buf+=$'\t';; r) buf+=$'\r';;
-            0) sx_lex_error 'this reference implementation cannot store NUL in strings; use bytes'; return 1;;
-            '\') buf+='\';; '"') buf+='"';; "'") buf+="'";;
-            *) buf+="$esc";;
+            n) buf+=0a;; t) buf+=09;; r) buf+=0d;; 0) buf+=00;;
+            \\) buf+=5c;; '"') buf+=22;; "'") buf+=27;;
+            *) bl_text_to_utf8_hex "$esc"; buf+=$RET;;
           esac
-        else
-          buf+="$c"
+        else bl_text_to_utf8_hex "$c"; buf+=$RET
         fi
       done
       [[ $c == "$q" ]] || { sx_lex_error 'unterminated string'; return 1; }
@@ -393,7 +391,7 @@ sx_parse_sexpr_datum() {
   case $t in
     num) ((SX_POS++)) || true; sx_number_literal "$v" ;;
     bytes) ((SX_POS++)) || true; bl_make_bytes_from_hex "$v" ;;
-    str) ((SX_POS++)) || true; bl_make_string "$v" ;;
+    str) ((SX_POS++)) || true; bl_make_string_from_hex "$v" ;;
     id)
       ((SX_POS++)) || true
       case $v in
@@ -1096,7 +1094,7 @@ sx_parse_primary() {
   case $t in
     num) ((SX_POS++)) || true; sx_number_literal "$v" ;;
     bytes) ((SX_POS++)) || true; bl_make_bytes_from_hex "$v" ;;
-    str) ((SX_POS++)) || true; bl_make_string "$v" ;;
+    str) ((SX_POS++)) || true; bl_make_string_from_hex "$v" ;;
     id)
       case $v in
         true|false) ((SX_POS++)) || true; RET=$v ;;
@@ -1258,8 +1256,8 @@ sx_parse_object_literal() {
       if sx_accept '['; then
         sx_parse_assignment || return; key_ast=$RET; sx_expect ']' || return
       elif sx_type_is id || sx_type_is str || sx_type_is num; then
-        key=${SX_TOK_VAL[SX_POS]}; [[ ${SX_TOK_TYPE[SX_POS]} == id ]] && key_is_id=1
-        ((SX_POS++)) || true; sx_str "$key"; key_ast=$RET
+        key=${SX_TOK_VAL[SX_POS]}; local __kt=${SX_TOK_TYPE[SX_POS]}; [[ $__kt == id ]] && key_is_id=1
+        ((SX_POS++)) || true; if [[ $__kt == str ]]; then bl_make_string_from_hex "$key"; else sx_str "$key"; fi; key_ast=$RET
       else sx_error 'expected object property name, [computed key], or spread'; return 1; fi
 
       if sx_accept ':'; then

@@ -451,3 +451,8 @@ BLisp should become a language in which:
 6. **libraries can build almost everything above a small capability layer;**
 7. **errors, source locations, and tooling are designed into representations;**
 8. **the specification survives replacing Bash entirely.**
+
+
+## Reference implementation fidelity rule
+
+Embedded U+0000 is a required reference-implementation conformance case. Bash's inability to hold a NUL byte in a shell variable is an implementation detail, never a BLisp language restriction. The Bash runtime uses an encoded backing representation for strings that cannot be losslessly materialized in a shell variable; host APIs that themselves forbid NUL may reject such values at that boundary.
