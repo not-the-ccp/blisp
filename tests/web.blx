@@ -4,12 +4,13 @@ include "../lib/web.blx";
 let t = testing.suite("web");
 let h = web.html;
 let css = web.css;
+let q = bytes([34]).decode();
 
 t.test("HTML text and attribute escaping", fn() {
   testing.equal(h.render(h.p("<&>")), "<p>&lt;&amp;&gt;</p>", null);
   testing.equal(
-    h.render(h.input({aria_label: "A&B", disabled: true, required: false, value: "\"x\""})),
-    "<input aria-label=\"A&amp;B\" disabled value=\"&quot;x&quot;\">",
+    h.render(h.input({aria_label: "A&B", disabled: true, required: false, value: q + "x" + q})),
+    "<input aria-label=" + q + "A&amp;B" + q + " disabled value=" + q + "&quot;x&quot;" + q + ">",
     null
   );
 });
@@ -23,7 +24,7 @@ t.test("HTML fragments, arrays, and nil children", fn() {
   );
   testing.equal(
     h.render(tree),
-    "<div class=\"box\"><h1>Title</h1><p>one</p><p>two</p><span>a</span><span>b</span></div>",
+    "<div class=" + q + "box" + q + "><h1>Title</h1><p>one</p><p>two</p><span>a</span><span>b</span></div>",
     null
   );
 });
@@ -35,7 +36,7 @@ t.test("exact attributes and deterministic object shorthand", fn() {
   );
   testing.equal(
     h.render(h.label(attrs, "Email")),
-    "<label data-test-id=\"field\" for=\"email\">Email</label>",
+    "<label data-test-id=" + q + "field" + q + " for=" + q + "email" + q + ">Email</label>",
     null
   );
 });
@@ -92,11 +93,14 @@ t.test("static page renderer emits a complete document", fn() {
     stylesheet: "app.css",
     body: h.main(h.h1("Hello"), h.p("Pure BLisp source"))
   });
-  testing.equal(
-    page,
-    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta content=\"width=device-width, initial-scale=1\" name=\"viewport\"><title>A &amp; B</title><link href=\"app.css\" rel=\"stylesheet\"></head><body><main><h1>Hello</h1><p>Pure BLisp source</p></main></body></html>",
-    null
-  );
+  let expected = "<!doctype html><html lang=" + q + "en" + q
+    + "><head><meta charset=" + q + "utf-8" + q
+    + "><meta content=" + q + "width=device-width, initial-scale=1" + q
+    + " name=" + q + "viewport" + q
+    + "><title>A &amp; B</title><link href=" + q + "app.css" + q
+    + " rel=" + q + "stylesheet" + q
+    + "></head><body><main><h1>Hello</h1><p>Pure BLisp source</p></main></body></html>";
+  testing.equal(page, expected, null);
 });
 
 t.report();
