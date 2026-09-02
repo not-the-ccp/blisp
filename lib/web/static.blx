@@ -3,6 +3,10 @@ include "html.blx";
 // Build-time/static rendering uses the same HTML node values intended for the
 // future live DOM renderer.
 
+fn _webStaticError(message) {
+  throw({kind: :webStatic, message});
+}
+
 fn _webStaticAppendHead(out, value) {
   if (value == null) return out;
   if (type(value) == "array") {
@@ -13,7 +17,7 @@ fn _webStaticAppendHead(out, value) {
 
 fn _webStaticPage(options) {
   if (options == null) options = {};
-  if (type(options) != "object") throw({kind: :webStatic, message: "web.static.page() expects an options object"});
+  if (type(options) != "object") _webStaticError("web.static.page() expects an options object");
 
   let title = options.title == null ? "" : options.title;
   let lang = options.lang == null ? "en" : options.lang;
@@ -39,4 +43,63 @@ fn _webStaticPage(options) {
   return "<!doctype html>" + webHtml.render(document);
 }
 
-const webStatic = {page: _webStaticPage};
+fn _webStaticValidatePath(path) {
+  if (type(path) != "string") _webStaticError("web.static.file() path must be a string");
+  if (path == "" or path.startsWith("/")) _webStaticError("static output path must be relative and non-empty");
+  if (path.contains("\\")) _webStaticError("static output paths use '/' separators");
+
+  for (let part of path.split("/")) {
+    if (part == "" or part == "." or part == "..") {
+      _webStaticError("static output path contains an invalid component: " + path);
+    }
+  }
+  return path;
+}
+
+fn _webStaticFile(path, content) {
+  _webStaticValidatePath(path);
+  if (type(content) != "string") {
+    _webStaticError("web.static.file() content must currently be a string");
+  }
+  return {
+    __web_static_file: true,
+    path,
+    content
+  };
+}
+
+fn _webStaticAppendFile(out, value) {
+  if (value == null) return out;
+  if (type(value) == "array") {
+    for (let item of value) _webStaticAppendFile(out, item);
+    return out;
+  }
+  if (type(value) != "object" or value.__web_static_file != true) {
+    _webStaticError("web.static.site() expects web.static.file() values");
+  }
+  out.push(value);
+  return out;
+}
+
+fn _webStaticSite(...filesList) {
+  let files = [];
+  for (let value of toArray(filesList)) _webStaticAppendFile(files, value);
+  if (files.length == 0) _webStaticError("web.static.site() requires at least one output file");
+
+  let seen = {};
+  for (let file of files) {
+    if (seen[file.path] == true) _webStaticError("duplicate static output path: " + file.path);
+    seen[file.path] = true;
+  }
+
+  return {
+    __web_static_site: true,
+    files
+  };
+}
+
+const webStatic = {
+  page: _webStaticPage,
+  file: _webStaticFile,
+  site: _webStaticSite
+};
