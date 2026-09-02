@@ -9,7 +9,7 @@ bash tests/includes.sh
 bash tests/diagnostics.sh
 
 printf '%s\n' '[fast 2/4] focused interpreter/compiler suites (isolated, parallel)'
-suites=(operators ranges hygiene environment hashability callables grammar layout ergonomics string-nul)
+suites=(operators ranges hygiene environment hashability callables grammar layout ergonomics string-nul web-html web-css web-static)
 declare -A pids=()
 for name in "${suites[@]}"; do
   (

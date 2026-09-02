@@ -1,0 +1,322 @@
+include "../prelude.blx";
+
+// Host-neutral HTML values. These are ordinary BLisp objects: the static
+// renderer consumes them today and a future browser renderer can consume the
+// same tree without changing application code.
+
+const _WEB_HTML_QUOTE = bytes([34]).decode();
+const _WEB_HTML_VOID_TAGS = [
+  "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+  "meta", "param", "source", "track", "wbr"
+];
+
+fn _webHtmlError(message) { throw({kind: :webHtml, message}); }
+
+fn _webHtmlReplace(s, old, replacement) {
+  return str(s).split(old).join(replacement);
+}
+
+fn _webHtmlEscapeText(value) {
+  let out = str(value);
+  out = _webHtmlReplace(out, "&", "&amp;");
+  out = _webHtmlReplace(out, "<", "&lt;");
+  out = _webHtmlReplace(out, ">", "&gt;");
+  return out;
+}
+
+fn _webHtmlEscapeAttribute(value) {
+  let out = _webHtmlEscapeText(value);
+  out = _webHtmlReplace(out, _WEB_HTML_QUOTE, "&quot;");
+  out = _webHtmlReplace(out, "'", "&#39;");
+  return out;
+}
+
+fn _webHtmlAsciiLetter(c) {
+  return "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ".indexOf(c) >= 0;
+}
+
+fn _webHtmlAsciiDigit(c) { return "0123456789".indexOf(c) >= 0; }
+
+fn _webHtmlValidTagName(name) {
+  if (name.length == 0 or !_webHtmlAsciiLetter(name.charAt(0))) return false;
+  for (let i = 1; i < name.length; i++) {
+    let c = name.charAt(i);
+    if (!_webHtmlAsciiLetter(c) and !_webHtmlAsciiDigit(c) and c != "-" and c != ":") return false;
+  }
+  return true;
+}
+
+fn _webHtmlValidAttributeName(name) {
+  if (name.length == 0) return false;
+  let first = name.charAt(0);
+  if (!_webHtmlAsciiLetter(first) and first != ":") return false;
+  for (let i = 1; i < name.length; i++) {
+    let c = name.charAt(i);
+    if (!_webHtmlAsciiLetter(c) and !_webHtmlAsciiDigit(c) and c != "-" and c != ":" and c != ".") return false;
+  }
+  return true;
+}
+
+fn _webHtmlNormalizeShorthandAttributeName(name) {
+  return str(name).split("_").join("-");
+}
+
+fn _webHtmlIsNode(value) {
+  return type(value) == "object" and value.__web_html_node == true;
+}
+
+fn _webHtmlIsAttributes(value) {
+  return type(value) == "object" and value.__web_html_attributes == true;
+}
+
+fn _webHtmlIsAttribute(value) {
+  return type(value) == "object" and value.__web_html_attribute == true;
+}
+
+fn _webHtmlAttribute(name, value) {
+  let n = str(name);
+  if (!_webHtmlValidAttributeName(n)) _webHtmlError("invalid HTML attribute name: " + repr(n));
+  return {__web_html_attribute: true, name: n, value};
+}
+
+fn _webHtmlAppendAttributeEntries(out, value) {
+  if (value == null) return out;
+
+  if (_webHtmlIsAttribute(value)) {
+    out.push([value.name, value.value]);
+    return out;
+  }
+
+  if (_webHtmlIsAttributes(value)) {
+    for (let pair of value.entries) out.push(pair);
+    return out;
+  }
+
+  if (type(value) == "object" and !_webHtmlIsNode(value)) {
+    let names = keys(value).sorted();
+    for (let sourceName of names) {
+      let name = _webHtmlNormalizeShorthandAttributeName(sourceName);
+      if (!_webHtmlValidAttributeName(name)) _webHtmlError("invalid HTML attribute name: " + repr(name));
+      out.push([name, value[sourceName]]);
+    }
+    return out;
+  }
+
+  _webHtmlError("attributes must be an object, html.attr(), or html.attrs() value");
+}
+
+fn _webHtmlAttributes(...valuesList) {
+  let entries = [];
+  for (let value of toArray(valuesList)) _webHtmlAppendAttributeEntries(entries, value);
+  return {__web_html_attributes: true, entries};
+}
+
+fn _webHtmlNormalizeAttributes(value) {
+  let entries = [];
+  _webHtmlAppendAttributeEntries(entries, value);
+  return entries;
+}
+
+fn _webHtmlText(value) {
+  return {__web_html_node: true, kind: :text, value: str(value)};
+}
+
+fn _webHtmlUnsafeRaw(value) {
+  return {__web_html_node: true, kind: :raw, value: str(value)};
+}
+
+fn _webHtmlAppendChild(out, value) {
+  if (value == null) return out;
+
+  if (_webHtmlIsNode(value)) {
+    out.push(value);
+    return out;
+  }
+
+  if (type(value) == "array") {
+    for (let child of value) _webHtmlAppendChild(out, child);
+    return out;
+  }
+
+  out.push(_webHtmlText(value));
+  return out;
+}
+
+fn _webHtmlNormalizeChildren(values) {
+  let out = [];
+  for (let value of values) _webHtmlAppendChild(out, value);
+  return out;
+}
+
+fn _webHtmlLooksLikeAttributes(value) {
+  return type(value) == "object" and !_webHtmlIsNode(value);
+}
+
+fn _webHtmlBuildElement(tag, attrs, children) {
+  let name = str(tag);
+  if (!_webHtmlValidTagName(name)) _webHtmlError("invalid HTML tag name: " + repr(name));
+  return {
+    __web_html_node: true,
+    kind: :element,
+    tag: name,
+    attrs: _webHtmlNormalizeAttributes(attrs),
+    children: _webHtmlNormalizeChildren(children)
+  };
+}
+
+fn _webHtmlFromTagArgs(tag, args) {
+  let attrs = null;
+  let childStart = 0;
+  if (args.length > 0 and _webHtmlLooksLikeAttributes(args[0])) {
+    attrs = args[0];
+    childStart = 1;
+  }
+
+  let children = [];
+  for (let i = childStart; i < args.length; i++) children.push(args[i]);
+  return _webHtmlBuildElement(tag, attrs, children);
+}
+
+fn _webHtmlElement(tag, ...argsList) {
+  return _webHtmlFromTagArgs(tag, toArray(argsList));
+}
+
+fn _webHtmlTag(tag) {
+  return fn(...argsList) { return _webHtmlFromTagArgs(tag, toArray(argsList)); };
+}
+
+fn _webHtmlFragment(...childrenList) {
+  return {
+    __web_html_node: true,
+    kind: :fragment,
+    children: _webHtmlNormalizeChildren(toArray(childrenList))
+  };
+}
+
+fn _webHtmlIsVoid(tag) {
+  for (let candidate of _WEB_HTML_VOID_TAGS) if (tag == candidate) return true;
+  return false;
+}
+
+fn _webHtmlRenderAttributes(entries) {
+  let out = "";
+  let seen = {};
+
+  for (let pair of entries) {
+    let name = pair[0];
+    let value = pair[1];
+
+    if (seen[name] == true) _webHtmlError("duplicate HTML attribute: " + name);
+    seen[name] = true;
+
+    if (value == null or value == false) continue;
+    out += " " + name;
+    if (value != true) out += "=" + _WEB_HTML_QUOTE + _webHtmlEscapeAttribute(value) + _WEB_HTML_QUOTE;
+  }
+
+  return out;
+}
+
+fn _webHtmlRender(node) {
+  if (!_webHtmlIsNode(node)) node = _webHtmlText(node);
+
+  if (node.kind == :text) return _webHtmlEscapeText(node.value);
+  if (node.kind == :raw) return node.value;
+
+  if (node.kind == :fragment) {
+    let out = "";
+    for (let child of node.children) out += _webHtmlRender(child);
+    return out;
+  }
+
+  if (node.kind != :element) _webHtmlError("unknown HTML node kind: " + repr(node.kind));
+
+  let out = "<" + node.tag + _webHtmlRenderAttributes(node.attrs) + ">";
+  if (_webHtmlIsVoid(node.tag)) {
+    if (node.children.length != 0) _webHtmlError("void HTML element <" + node.tag + "> cannot have children");
+    return out;
+  }
+
+  for (let child of node.children) out += _webHtmlRender(child);
+  return out + "</" + node.tag + ">";
+}
+
+const webHtml = {
+  attr: _webHtmlAttribute,
+  attrs: _webHtmlAttributes,
+  element: _webHtmlElement,
+  el: _webHtmlElement,
+  text: _webHtmlText,
+  fragment: _webHtmlFragment,
+  unsafeRaw: _webHtmlUnsafeRaw,
+  render: _webHtmlRender,
+  escapeText: _webHtmlEscapeText,
+  escapeAttribute: _webHtmlEscapeAttribute,
+
+  html: _webHtmlTag("html"),
+  head: _webHtmlTag("head"),
+  body: _webHtmlTag("body"),
+  title: _webHtmlTag("title"),
+  meta: _webHtmlTag("meta"),
+  link: _webHtmlTag("link"),
+  header: _webHtmlTag("header"),
+  footer: _webHtmlTag("footer"),
+  main: _webHtmlTag("main"),
+  nav: _webHtmlTag("nav"),
+  section: _webHtmlTag("section"),
+  article: _webHtmlTag("article"),
+  aside: _webHtmlTag("aside"),
+  h1: _webHtmlTag("h1"),
+  h2: _webHtmlTag("h2"),
+  h3: _webHtmlTag("h3"),
+  h4: _webHtmlTag("h4"),
+  h5: _webHtmlTag("h5"),
+  h6: _webHtmlTag("h6"),
+  p: _webHtmlTag("p"),
+  a: _webHtmlTag("a"),
+  span: _webHtmlTag("span"),
+  div: _webHtmlTag("div"),
+  ul: _webHtmlTag("ul"),
+  ol: _webHtmlTag("ol"),
+  li: _webHtmlTag("li"),
+  dl: _webHtmlTag("dl"),
+  dt: _webHtmlTag("dt"),
+  dd: _webHtmlTag("dd"),
+  form: _webHtmlTag("form"),
+  label: _webHtmlTag("label"),
+  input: _webHtmlTag("input"),
+  textarea: _webHtmlTag("textarea"),
+  button: _webHtmlTag("button"),
+  select: _webHtmlTag("select"),
+  option: _webHtmlTag("option"),
+  fieldset: _webHtmlTag("fieldset"),
+  legend: _webHtmlTag("legend"),
+  table: _webHtmlTag("table"),
+  caption: _webHtmlTag("caption"),
+  thead: _webHtmlTag("thead"),
+  tbody: _webHtmlTag("tbody"),
+  tfoot: _webHtmlTag("tfoot"),
+  tr: _webHtmlTag("tr"),
+  th: _webHtmlTag("th"),
+  td: _webHtmlTag("td"),
+  img: _webHtmlTag("img"),
+  picture: _webHtmlTag("picture"),
+  source: _webHtmlTag("source"),
+  video: _webHtmlTag("video"),
+  audio: _webHtmlTag("audio"),
+  canvas: _webHtmlTag("canvas"),
+  pre: _webHtmlTag("pre"),
+  code: _webHtmlTag("code"),
+  blockquote: _webHtmlTag("blockquote"),
+  strong: _webHtmlTag("strong"),
+  em: _webHtmlTag("em"),
+  small: _webHtmlTag("small"),
+  details: _webHtmlTag("details"),
+  summary: _webHtmlTag("summary"),
+  figure: _webHtmlTag("figure"),
+  figcaption: _webHtmlTag("figcaption"),
+  time: _webHtmlTag("time"),
+  address: _webHtmlTag("address"),
+  br: _webHtmlTag("br"),
+  hr: _webHtmlTag("hr")
+};

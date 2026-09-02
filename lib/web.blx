@@ -1,0 +1,9 @@
+include "web/html.blx";
+include "web/css.blx";
+include "web/static.blx";
+
+const web = {
+  html: webHtml,
+  css: webCss,
+  static: webStatic
+};

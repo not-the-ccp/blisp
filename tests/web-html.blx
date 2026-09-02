@@ -1,0 +1,43 @@
+include "../lib/testing.blx";
+include "../lib/web.blx";
+
+let t = testing.suite("web-html");
+let h = web.html;
+let q = bytes([34]).decode();
+
+fn closeTag(tag) { return "<" + "/" + tag + ">"; }
+
+t.test("text and attribute escaping", fn() {
+  testing.equal(h.render(h.p("<&>")), "<p>&lt;&amp;&gt;" + closeTag("p"), null);
+  testing.equal(
+    h.render(h.input({aria_label: "A&B", disabled: true, required: false, value: q + "x" + q})),
+    "<input aria-label=" + q + "A&amp;B" + q + " disabled value=" + q + "&quot;x&quot;" + q + ">",
+    null
+  );
+});
+
+t.test("fragments arrays and nil children", fn() {
+  let tree = h.div({class: "box"}, h.h1("Title"), [h.p("one"), null, h.p("two")], h.fragment(h.span("a"), h.span("b")));
+  let expected = "<div class=" + q + "box" + q + "><h1>Title" + closeTag("h1") + "<p>one" + closeTag("p") + "<p>two" + closeTag("p") + "<span>a" + closeTag("span") + "<span>b" + closeTag("span") + closeTag("div");
+  testing.equal(h.render(tree), expected, null);
+});
+
+t.test("exact and shorthand attributes", fn() {
+  let attrs = h.attrs({data_test_id: "field"}, h.attr("for", "email"));
+  testing.equal(h.render(h.label(attrs, "Email")), "<label data-test-id=" + q + "field" + q + " for=" + q + "email" + q + ">Email" + closeTag("label"), null);
+});
+
+t.test("invalid structures are rejected", fn() {
+  testing.throws(fn() { h.el("bad tag", "x"); }, :webHtml);
+  testing.throws(fn() { h.render(h.input("child")); }, :webHtml);
+  testing.throws(fn() { h.render(h.input(h.attrs(h.attr("disabled", true), h.attr("disabled", true)))); }, :webHtml);
+});
+
+t.test("raw markup is explicit", fn() {
+  let source = "<b>x<" + "/" + "b>";
+  let trusted = "<i>trusted<" + "/" + "i>";
+  let expected = "<div>&lt;b&gt;x&lt;/b&gt;<i>trusted" + closeTag("i") + closeTag("div");
+  testing.equal(h.render(h.div(source, h.unsafeRaw(trusted))), expected, null);
+});
+
+t.report();
