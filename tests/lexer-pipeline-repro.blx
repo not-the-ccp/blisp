@@ -1,0 +1,18 @@
+let rbrace = bytes([125]).decode();
+
+let objectClosure = fn() {
+  return {color: "red;", normal: "red"};
+};
+
+let stringClosure = fn() {
+  return "x" + rbrace + "body";
+};
+
+let nested = fn() {
+  let callback = fn() { return {value: "last string in nested callback"}; };
+  return callback().value;
+};
+
+println(objectClosure().color);
+println(stringClosure());
+println(nested());
