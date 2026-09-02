@@ -1,0 +1,102 @@
+include "../lib/testing.blx";
+include "../lib/web.blx";
+
+let t = testing.suite("web");
+let h = web.html;
+let css = web.css;
+
+t.test("HTML text and attribute escaping", fn() {
+  testing.equal(h.render(h.p("<&>")), "<p>&lt;&amp;&gt;</p>", null);
+  testing.equal(
+    h.render(h.input({aria_label: "A&B", disabled: true, required: false, value: "\"x\""})),
+    "<input aria-label=\"A&amp;B\" disabled value=\"&quot;x&quot;\">",
+    null
+  );
+});
+
+t.test("HTML fragments, arrays, and nil children", fn() {
+  let tree = h.div(
+    {class: "box"},
+    h.h1("Title"),
+    [h.p("one"), null, h.p("two")],
+    h.fragment(h.span("a"), h.span("b"))
+  );
+  testing.equal(
+    h.render(tree),
+    "<div class=\"box\"><h1>Title</h1><p>one</p><p>two</p><span>a</span><span>b</span></div>",
+    null
+  );
+});
+
+t.test("exact attributes and deterministic object shorthand", fn() {
+  let attrs = h.attrs(
+    {data_test_id: "field"},
+    h.attr("for", "email")
+  );
+  testing.equal(
+    h.render(h.label(attrs, "Email")),
+    "<label data-test-id=\"field\" for=\"email\">Email</label>",
+    null
+  );
+});
+
+t.test("HTML rejects structurally invalid values", fn() {
+  testing.throws(fn() { h.el("bad tag", "x"); }, :webHtml);
+  testing.throws(fn() { h.render(h.input("child")); }, :webHtml);
+  testing.throws(fn() {
+    h.render(h.input(h.attrs(h.attr("disabled", true), h.attr("disabled", true))));
+  }, :webHtml);
+});
+
+t.test("explicit unsafe raw HTML is never implicit", fn() {
+  testing.equal(
+    h.render(h.div("<b>x</b>", h.unsafeRaw("<i>trusted</i>"))),
+    "<div>&lt;b&gt;x&lt;/b&gt;<i>trusted</i></div>",
+    null
+  );
+});
+
+t.test("CSS declarations are structured and deterministic", fn() {
+  let sheet = css.sheet(
+    css.rule("body", {font_family: "system-ui", margin: "0"}),
+    css.rule(".card:hover", {transform: "translateY(-2px)"})
+  );
+  testing.equal(
+    css.render(sheet),
+    "body{font-family:system-ui;margin:0;}.card:hover{transform:translateY(-2px);}",
+    null
+  );
+});
+
+t.test("CSS exact custom properties and trusted raw escape hatch", fn() {
+  let declarations = css.props(
+    css.prop("--accent", "#83b"),
+    css.prop("background-image", css.raw("url(data:image/svg+xml;base64,abc;def)"))
+  );
+  testing.equal(
+    css.render(css.rule(":root", declarations)),
+    ":root{--accent:#83b;background-image:url(data:image/svg+xml;base64,abc;def);}",
+    null
+  );
+});
+
+t.test("CSS prevents accidental structural breakout", fn() {
+  testing.throws(fn() { css.render(css.rule("x", {color: "red;})); }, :webCss);
+  testing.throws(fn() { css.rule("x}body", {color: "red"}); }, :webCss);
+});
+
+t.test("static page renderer emits a complete document", fn() {
+  let page = web.static.page({
+    lang: "en",
+    title: "A & B",
+    stylesheet: "app.css",
+    body: h.main(h.h1("Hello"), h.p("Pure BLisp source"))
+  });
+  testing.equal(
+    page,
+    "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta content=\"width=device-width, initial-scale=1\" name=\"viewport\"><title>A &amp; B</title><link href=\"app.css\" rel=\"stylesheet\"></head><body><main><h1>Hello</h1><p>Pure BLisp source</p></main></body></html>",
+    null
+  );
+});
+
+t.report();
