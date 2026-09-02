@@ -373,29 +373,44 @@ bl_eval_sequence() {
 bl_bind_params() {
   local env=$1 params=$2; shift 2
   local -a args=("$@")
+  local scan=$params required=0 tail
+
+  # Validate the complete parameter shape and arity before installing
+  # any bindings. This keeps failed calls atomic and gives the
+  # interpreter/compiler one deterministic diagnostic contract.
+  while [[ ${BL_TYPE[$scan]-} == cons ]]; do
+    ((required++)) || true
+    scan=${BL_B[$scan]}
+  done
+  tail=$scan
+  if [[ $tail == nil ]]; then
+    (( ${#args[@]} == required )) || {
+      echo "BLisp: arity mismatch: expected $required, got ${#args[@]}" >&2
+      return 1
+    }
+  else
+    [[ ${BL_TYPE[$tail]-} == symbol ]] || { echo 'BLisp: malformed lambda parameter list' >&2; return 1; }
+    (( ${#args[@]} >= required )) || {
+      echo "BLisp: arity mismatch: expected at least $required, got ${#args[@]}" >&2
+      return 1
+    }
+  fi
+
   local cur=$params i=0 namev
   while [[ ${BL_TYPE[$cur]-} == cons ]]; do
-    (( i < ${#args[@]} )) || { echo "BLisp: arity mismatch: expected at least $((i+1)), got ${#args[@]}" >&2; return 1; }
     namev=${BL_A[$cur]}
     [[ ${BL_TYPE[$namev]-} == symbol ]] || { echo 'BLisp: lambda parameter is not a symbol' >&2; return 1; }
     bl_env_define "$env" "${BL_A[$namev]}" "${args[i]}" >/dev/null
     ((i++)) || true
     cur=${BL_B[$cur]}
   done
-  if [[ $cur == nil ]]; then
-    (( i == ${#args[@]} )) || { echo "BLisp: arity mismatch: expected $i, got ${#args[@]}" >&2; return 1; }
-    RET=nil
-    return 0
-  fi
-  # An improper parameter-list tail is a Lisp-style rest parameter:
-  #   (lambda (head . rest) ...)
-  [[ ${BL_TYPE[$cur]-} == symbol ]] || { echo 'BLisp: malformed lambda parameter list' >&2; return 1; }
+  if [[ $cur == nil ]]; then RET=nil; return 0; fi
+
   local -a rest=("${args[@]:i}")
   bl_list_from_array "${rest[@]}"; local restv=$RET
   bl_env_define "$env" "${BL_A[$cur]}" "$restv" >/dev/null
   RET=$restv
 }
-
 
 bl_apply() {
   local fn=$1; shift

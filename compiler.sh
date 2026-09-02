@@ -70,9 +70,9 @@ comp_lambda_parts() {
   comp_emit "$fn() {"
   comp_emit '  local __parent=$1 __this=$2; shift 2'
   if [[ -n $restname ]]; then
-    comp_emit "  (( \$# >= ${#pnames[@]} )) || { echo 'BLisp: arity mismatch in compiled closure' >&2; return 1; }"
+    comp_emit "  (( \$# >= ${#pnames[@]} )) || { echo \"BLisp: arity mismatch: expected at least ${#pnames[@]}, got \$#\" >&2; return 1; }"
   else
-    comp_emit "  (( \$# == ${#pnames[@]} )) || { echo 'BLisp: arity mismatch in compiled closure' >&2; return 1; }"
+    comp_emit "  (( \$# == ${#pnames[@]} )) || { echo \"BLisp: arity mismatch: expected ${#pnames[@]}, got \$#\" >&2; return 1; }"
   fi
   comp_emit '  bl_env_new "$__parent"; local ENV=$RET'
   comp_emit '  bl_env_define "$ENV" this "$__this" >/dev/null'
