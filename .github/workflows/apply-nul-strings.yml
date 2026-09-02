@@ -89,25 +89,34 @@ jobs:
           '''
           p.write_text(s[:a]+writer+s[b:])
 
-          # Bash single-quoted '\\' is two characters.  The migrated surface
-          # lexer needs to recognize one source backslash, so normalize the
-          # comparison/case pattern to the shell-grammar forms that denote one.
+          # Normalize only the text-string escape branch. Byte literals have a
+          # separate, already-tested escape parser and must not be touched.
           p=Path('surface.sh')
           lines=p.read_text().splitlines(keepends=True)
-          fixed_if=0
-          fixed_case=0
+          string_if=-1
+          string_end=-1
           for i,line in enumerate(lines):
               if i+1 < len(lines) and 'if [[ $c ==' in line and 'unterminated string escape' in lines[i+1]:
-                  indent=line[:len(line)-len(line.lstrip())]
-                  lines[i]=indent+'if [[ $c == \\\\ ]]; then\n'
-                  fixed_if+=1
-              if 'buf+=5c;;' in line:
-                  pos=line.index('buf+=5c;;')
-                  indent=line[:len(line)-len(line.lstrip())]
-                  lines[i]=indent+'\\\\) '+line[pos:]
-                  fixed_case+=1
-          if fixed_if != 1 or fixed_case != 1:
-              raise SystemExit(f'unexpected surface backslash sites: if={fixed_if} case={fixed_case}')
+                  if string_if != -1:
+                      raise SystemExit('multiple text-string escape branches')
+                  string_if=i
+              if string_if != -1 and i >= string_if and 'sx_tok str "$buf"' in line:
+                  string_end=i
+                  break
+          if string_if < 0 or string_end < 0:
+              raise SystemExit('text-string escape branch not found')
+          indent=lines[string_if][:len(lines[string_if])-len(lines[string_if].lstrip())]
+          lines[string_if]=indent+'if [[ $c == \\\\ ]]; then\n'
+          case_sites=[]
+          for i in range(string_if, string_end+1):
+              if 'buf+=5c;;' in lines[i]:
+                  case_sites.append(i)
+          if len(case_sites) != 1:
+              raise SystemExit(f'unexpected text-string backslash case sites: {case_sites}')
+          i=case_sites[0]
+          pos=lines[i].index('buf+=5c;;')
+          indent=lines[i][:len(lines[i])-len(lines[i].lstrip())]
+          lines[i]=indent+'\\\\) '+lines[i][pos:]
           p.write_text(''.join(lines))
           PY
 
@@ -117,9 +126,8 @@ jobs:
           ./blisp evalx '"\0".length'
           ./blisp evalx '"\0" == "\0"'
           ./blisp evalx '"\0".encode("utf-8").hex()'
-          printf '%s\n' '[nul probe] classic length/utf8'
+          printf '%s\n' '[nul probe] classic length'
           ./blisp eval '(string-length "\0")'
-          ./blisp eval '(.hex (.encode "\0" "utf-8"))' || true
 
           source tests/differential-lib.sh
           parity_suite string-nul tests/string-nul.blx
