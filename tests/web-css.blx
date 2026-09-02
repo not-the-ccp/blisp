@@ -27,8 +27,11 @@ t.test("custom properties and raw values", fn() {
 
 t.test("structural breakout is rejected", fn() {
   let rbrace = bytes([125]).decode();
-  testing.throws(fn() { css.render(css.rule("x", {color: "red;})); }, :webCss);
-  testing.throws(fn() { css.rule("x" + rbrace + "body", {color: "red"}); }, :webCss);
+  let badSelector = "x" + rbrace + "body";
+  let badValue = {color: "red;"};
+  let normalValue = {color: "red"};
+  testing.throws(fn() { css.render(css.rule("x", badValue)); }, :webCss);
+  testing.throws(fn() { css.rule(badSelector, normalValue); }, :webCss);
 });
 
 t.report();
