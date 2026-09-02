@@ -1,0 +1,34 @@
+name: Apply structural source provenance checkpoint
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.sync/apply-provenance.py'
+      - '.github/workflows/apply-provenance.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ github.actor != 'github-actions[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply, verify, and commit provenance tables
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 .sync/apply-provenance.py
+          bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
+          bash tests/provenance.sh
+          bash tests/fast.sh
+          bash tests/stdlib-parity.sh
+          rm -rf .sync .github/workflows/apply-provenance.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Add structural source IDs and node spans'
+          git push
