@@ -8,6 +8,7 @@ bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
 bash tests/includes.sh
 bash tests/diagnostics.sh
 bash tests/lexer-pipeline-probe.sh
+bash tests/web-build.sh
 
 printf '%s\n' '[fast 2/4] focused interpreter/compiler suites (isolated, parallel)'
 suites=(operators ranges hygiene environment hashability callables grammar layout ergonomics string-nul web-html web-css web-static)
