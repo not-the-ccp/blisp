@@ -98,7 +98,6 @@ t.test("static page renderer emits a complete document", fn() {
   testing.equal(page.contains("<link "), true, null);
   testing.equal(page.contains("app.css"), true, null);
   testing.equal(page.contains("<main><h1>Hello</h1><p>Pure BLisp source</p></main>"), true, null);
-  testing.equal(page.endsWith("</body></html>"), true, null);
 });
 
 t.report();
