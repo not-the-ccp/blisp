@@ -3,12 +3,12 @@ set -euo pipefail
 cd -- "$(dirname -- "$0")/.."
 source tests/differential-lib.sh
 
-printf '%s\n' '[fast 1/3] shell syntax + include loader'
+printf '%s\n' '[fast 1/4] shell syntax + include loader'
 bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
 bash tests/includes.sh
 bash tests/diagnostics.sh
 
-printf '%s\n' '[fast 2/3] focused interpreter/compiler suites (isolated, parallel)'
+printf '%s\n' '[fast 2/4] focused interpreter/compiler suites (isolated, parallel)'
 suites=(operators ranges hygiene environment hashability callables grammar layout ergonomics)
 declare -A pids=()
 for name in "${suites[@]}"; do
@@ -30,5 +30,9 @@ for name in "${suites[@]}"; do
 done
 (( failed == 0 )) || exit 1
 
-printf '%s\n' '[fast 3/3] complete'
+printf '%s\n' '[fast 3/4] structured failures + generated semantic combinations'
+bash tests/outcomes.sh
+bash tests/generated-differential.sh
+
+printf '%s\n' '[fast 4/4] complete'
 printf '%s\n' 'FAST DIFFERENTIAL SUITE PASSED'
