@@ -7,6 +7,11 @@ source compiler.sh
 source surface.sh
 source layout.sh
 
+# Load only the CLI's source-loader declarations/helpers, without executing
+# blisp's main dispatch. Keeping the probe on the real function bodies avoids
+# creating a second approximate implementation of the chunking path.
+eval "$(awk '/^is_surface_file\(\)/ { emit=1 } /^# Compatibility helper/ { emit=0 } emit { print }' blisp)"
+
 fixture=tests/lexer-pipeline-repro.blx
 bl_runtime_init
 BL_SOURCE_CHUNKS=()
