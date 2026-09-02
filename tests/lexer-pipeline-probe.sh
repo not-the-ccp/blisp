@@ -38,12 +38,19 @@ for ((i=0; i<${#BL_SOURCE_CHUNKS[@]}; i++)); do
   if (( wrapped != 0 )); then sed 's/^/  wrapped: /' build/lexer-wrapped.err; fi
 done
 
-set +e
-./blisp check "$fixture" >build/lexer-check.out 2>build/lexer-check.err
-check_status=$?
-set -e
-printf 'blisp-check=%d\n' "$check_status"
-sed 's/^/  check: /' build/lexer-check.err
+probe_cli() {
+  local name=$1; shift
+  set +e
+  "$@" >"build/lexer-$name.out" 2>"build/lexer-$name.err"
+  local status=$?
+  set -e
+  printf '%s=%d\n' "$name" "$status"
+  sed "s/^/  $name: /" "build/lexer-$name.err"
+}
+
+probe_cli check ./blisp check "$fixture"
+probe_cli run ./blisp run "$fixture"
+probe_cli compile ./blisp compile "$fixture" -o build/lexer-pipeline-repro
 
 # Deliberately fail while this is a diagnostic probe so CI preserves the output.
 exit 1
