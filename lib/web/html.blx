@@ -4,6 +4,7 @@ include "../prelude.blx";
 // renderer consumes them today and a future browser renderer can consume the
 // same tree without changing application code.
 
+const _WEB_HTML_QUOTE = bytes([34]).decode();
 const _WEB_HTML_VOID_TAGS = [
   "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
   "meta", "param", "source", "track", "wbr"
@@ -25,7 +26,7 @@ fn _webHtmlEscapeText(value) {
 
 fn _webHtmlEscapeAttribute(value) {
   let out = _webHtmlEscapeText(value);
-  out = _webHtmlReplace(out, "\"", "&quot;");
+  out = _webHtmlReplace(out, _WEB_HTML_QUOTE, "&quot;");
   out = _webHtmlReplace(out, "'", "&#39;");
   return out;
 }
@@ -210,7 +211,7 @@ fn _webHtmlRenderAttributes(entries) {
 
     if (value == null or value == false) continue;
     out += " " + name;
-    if (value != true) out += "=\"" + _webHtmlEscapeAttribute(value) + "\"";
+    if (value != true) out += "=" + _WEB_HTML_QUOTE + _webHtmlEscapeAttribute(value) + _WEB_HTML_QUOTE;
   }
 
   return out;
