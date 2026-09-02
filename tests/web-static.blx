@@ -1,0 +1,25 @@
+include "../lib/testing.blx";
+include "../lib/web.blx";
+
+let t = testing.suite("web-static");
+let h = web.html;
+
+fn closeTag(tag) { return "<" + "/" + tag + ">"; }
+
+t.test("page composes a complete document", fn() {
+  let page = web.static.page({
+    lang: "en",
+    title: "A & B",
+    stylesheet: "app.css",
+    body: h.main(h.h1("Hello"), h.p("Pure BLisp source"))
+  });
+  let titleMarkup = "<title>A &amp; B" + closeTag("title");
+  let mainMarkup = "<main><h1>Hello" + closeTag("h1") + "<p>Pure BLisp source" + closeTag("p") + closeTag("main");
+  testing.equal(page.startsWith("<!doctype html><html "), true, null);
+  testing.equal(page.contains(titleMarkup), true, null);
+  testing.equal(page.contains("<link "), true, null);
+  testing.equal(page.contains("app.css"), true, null);
+  testing.equal(page.contains(mainMarkup), true, null);
+});
+
+t.report();
