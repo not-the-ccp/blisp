@@ -84,7 +84,28 @@ jobs:
             [[ -z $esc ]] || printf '%b' "$esc" >&"$fd"
           }
           '''
-          p.write_text(s[:a]+writer+s[b:])
+          s=s[:a]+writer+s[b:]
+
+          # The arithmetic/string '+' dispatcher used BL_A directly. That is
+          # only the raw fast path, so a NUL-backed operand appeared empty.
+          add=s.find('bl_builtin_add() {')
+          string_branch=s.find('    string)\n', add)
+          array_branch=s.find('    array)\n', string_branch)
+          if add < 0 or string_branch < 0 or array_branch < 0:
+              raise SystemExit('string-add branch anchors missing')
+          old=s[string_branch:array_branch]
+          if 'BL_A[$v]' not in old or '+ does not coerce mixed types' not in old:
+              raise SystemExit('unexpected pre-migration string-add branch')
+          new=r'''    string)
+              local out=; for v in "$@"; do
+                [[ ${BL_TYPE[$v]-} == string ]] || { echo 'BLisp: + does not coerce mixed types' >&2; return 1; }
+                bl_string_hex "$v" || return
+                out+=$RET
+              done
+              bl_make_string_from_hex "$out" ;;
+          '''
+          s=s[:string_branch]+new+s[array_branch:]
+          p.write_text(s)
 
           p=Path('surface.sh')
           lines=p.read_text().splitlines(keepends=True)
@@ -114,15 +135,14 @@ jobs:
 
           bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
 
-          printf '%s\n' '[nul probe] hybrid length/equality/utf8'
+          printf '%s\n' '[nul probe] hybrid primitives'
           ./blisp evalx '"\0".length'
           ./blisp evalx '"\0" == "\0"'
           ./blisp evalx '"\0".encode("utf-8").hex()'
+          ./blisp evalx '("A\0B" + "!").encode("utf-8").hex()'
           printf '%s\n' '[nul probe] classic length'
           ./blisp eval '(string-length "\0")'
 
-          # One diagnostic execution marks each assertion boundary. The actual
-          # conformance source remains unchanged and is what parity/CI compile.
           mkdir -p build
           python3 - <<'PY'
           from pathlib import Path
