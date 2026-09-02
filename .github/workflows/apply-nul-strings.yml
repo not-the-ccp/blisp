@@ -65,6 +65,21 @@ jobs:
 
           python3 .sync/apply-nul-strings.py
 
+          # String construction is used inside regex.match while BASH_REMATCH
+          # still contains the user's captures. Validation therefore must not
+          # use Bash =~ merely to recognize hexadecimal text: =~ mutates the
+          # process-global BASH_REMATCH array and destroys later captures.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('runtime.sh')
+          s=p.read_text()
+          old='  (( n % 2 == 0 )) && [[ $hex =~ ^[0-9a-f]*$ ]] || return 1\n'
+          new='  (( n % 2 == 0 )) && [[ $hex != *[!0-9a-f]* ]] || return 1\n'
+          if s.count(old) != 1:
+              raise SystemExit('UTF-8 hex validation anchor missing or ambiguous')
+          p.write_text(s.replace(old,new,1))
+          PY
+
           python3 - <<'PY'
           from pathlib import Path
 
@@ -86,8 +101,6 @@ jobs:
           '''
           s=s[:a]+writer+s[b:]
 
-          # The arithmetic/string '+' dispatcher used BL_A directly. That is
-          # only the raw fast path, so a NUL-backed operand appeared empty.
           add=s.find('bl_builtin_add() {')
           string_branch=s.find('    string)\n', add)
           array_branch=s.find('    array)\n', string_branch)
@@ -168,7 +181,7 @@ jobs:
           bash tests/fast.sh
           bash tests/stdlib-parity.sh
 
-          rm -rf .sync .github/workflows/apply-nul-strings.yml
+          rm -rf .sync .github/workflows/apply-nul-strings.yml .github/workflows/fix-arity-parity.yml
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
