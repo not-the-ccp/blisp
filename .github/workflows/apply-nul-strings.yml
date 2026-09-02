@@ -160,6 +160,9 @@ jobs:
           printf '%s\n' '[nul probe] full checkpoint run'
           ./blisp run build/string-nul-debug.blx || true
 
+          printf '%s\n' '[nul probe] stdlib-4 visible run'
+          ./blisp run tests/stdlib-4.blx || true
+
           source tests/differential-lib.sh
           parity_suite string-nul tests/string-nul.blx
           bash tests/fast.sh
