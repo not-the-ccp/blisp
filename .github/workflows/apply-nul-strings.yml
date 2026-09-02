@@ -34,8 +34,6 @@ jobs:
           mid=surface_text.find(marker)
           if mid < 0:
               raise SystemExit('surface string lexer NUL-rejection anchor missing')
-
-          # Find the outer string-literal branch, not the inner backslash branch.
           lines=surface_text.splitlines(keepends=True)
           offset=0
           a=-1
@@ -48,7 +46,6 @@ jobs:
               offset=next_offset
           if a < 0:
               raise SystemExit('surface string lexer outer-branch anchor missing')
-
           end_marker='      sx_tok str "$buf" "$gap"; gap=0; continue\n    fi\n'
           b=surface_text.find(end_marker, mid)
           if b < 0:
@@ -69,7 +66,38 @@ jobs:
 
           python3 .sync/apply-nul-strings.py
 
+          # Build the textual \xHH stream without asking printf to parse a
+          # half-formed \x escape in its own format string.
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('runtime.sh')
+          s=p.read_text()
+          a=s.find('bl_string_write_fd() {\n')
+          b=s.find('bl_string_write_path()', a)
+          if a < 0 or b < 0:
+              raise SystemExit('string writer function anchors missing')
+          new=r'''bl_string_write_fd() {
+            local v=$1 fd=$2 i pair esc= chunk=0
+            bl_string_hex "$v" || return; local hex=$RET
+            for ((i=0;i<${#hex};i+=2)); do
+              pair=${hex:i:2}; esc+="\\x$pair"; ((++chunk)) || true
+              if ((chunk>=2048)); then printf '%b' "$esc" >&"$fd" || return; esc=; chunk=0; fi
+            done
+            [[ -z $esc ]] || printf '%b' "$esc" >&"$fd"
+          }
+          '''
+          p.write_text(s[:a]+new+s[b:])
+          PY
+
           bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
+
+          printf '%s\n' '[nul probe] length'
+          ./blisp evalx '"\0".length'
+          printf '%s\n' '[nul probe] equality'
+          ./blisp evalx '"\0" == "\0"'
+          printf '%s\n' '[nul probe] utf8'
+          ./blisp evalx '"\0".encode("utf-8").hex()'
+
           source tests/differential-lib.sh
           parity_suite string-nul tests/string-nul.blx
           bash tests/fast.sh
