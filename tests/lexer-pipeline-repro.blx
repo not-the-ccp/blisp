@@ -1,0 +1,13 @@
+include "../lib/testing.blx";
+include "../lib/web.blx";
+
+let t = testing.suite("lexer-pipeline-repro");
+let css = web.css;
+
+t.test("nested callback source remains lexically valid", fn() {
+  let rbrace = bytes([125]).decode();
+  testing.throws(fn() { css.render(css.rule("x", {color: "red;"})); }, :webCss);
+  testing.throws(fn() { css.rule("x" + rbrace + "body", {color: "red"}); }, :webCss);
+});
+
+t.report();
