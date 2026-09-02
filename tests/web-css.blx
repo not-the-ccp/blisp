@@ -25,6 +25,33 @@ t.test("custom properties and raw values", fn() {
   testing.equal(css.render(css.rule(":root", declarations)), ":root{--accent:#83b;background-image:url(data:image/svg+xml;base64,abc;def);}", null);
 });
 
+t.test("media supports and container rules nest ordinary CSS nodes", fn() {
+  let sheet = css.sheet(
+    css.media("(width >= 50rem)", css.rule(".grid", {display: "grid"})),
+    css.supports("(display: subgrid)", [css.rule(".grid", {grid_template_columns: "subgrid"})]),
+    css.container("sidebar (width > 30rem)", css.rule(".card", {padding: "2rem"}))
+  );
+  testing.equal(
+    css.render(sheet),
+    "@media (width >= 50rem){.grid{display:grid;}}@supports (display: subgrid){.grid{grid-template-columns:subgrid;}}@container sidebar (width > 30rem){.card{padding:2rem;}}",
+    null
+  );
+});
+
+t.test("keyframes preserve frame and declaration order", fn() {
+  let animation = css.keyframes(
+    "fade-slide",
+    css.keyframe("from", {opacity: "0", transform: "translateY(1rem)"}),
+    css.keyframe("50%, 75%", css.props(css.prop("opacity", "0.5"), css.prop("opacity", "0.75"))),
+    css.keyframe("to", {opacity: "1", transform: "translateY(0)"})
+  );
+  testing.equal(
+    css.render(animation),
+    "@keyframes fade-slide{from{opacity:0;transform:translateY(1rem);}50%,75%{opacity:0.5;opacity:0.75;}to{opacity:1;transform:translateY(0);}}",
+    null
+  );
+});
+
 t.test("structural breakout is rejected", fn() {
   let rbrace = bytes([125]).decode();
   let badSelector = "x" + rbrace + "body";
@@ -32,6 +59,9 @@ t.test("structural breakout is rejected", fn() {
   let normalValue = {color: "red"};
   testing.throws(fn() { css.render(css.rule("x", badValue)); }, :webCss);
   testing.throws(fn() { css.rule(badSelector, normalValue); }, :webCss);
+  testing.throws(fn() { css.media("screen; @import x", css.rule("x", normalValue)); }, :webCss);
+  testing.throws(fn() { css.keyframe("half", normalValue); }, :webCss);
+  testing.throws(fn() { css.keyframes("bad name", css.keyframe("to", normalValue)); }, :webCss);
 });
 
 t.report();

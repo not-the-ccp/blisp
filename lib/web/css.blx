@@ -119,17 +119,117 @@ fn _webCssAppendRule(out, value) {
     for (let rule of value) _webCssAppendRule(out, rule);
     return out;
   }
-  if (!_webCssIsNode(value)) _webCssError("stylesheet children must be CSS rule values");
+  if (!_webCssIsNode(value)) _webCssError("stylesheet children must be CSS node values");
   if (value.kind == :sheet) {
     for (let rule of value.rules) out.push(rule);
   } else out.push(value);
   return out;
 }
 
-fn _webCssSheet(...rulesList) {
+fn _webCssNormalizeRules(values) {
   let rules = [];
-  for (let rule of toArray(rulesList)) _webCssAppendRule(rules, rule);
-  return {__web_css_node: true, kind: :sheet, rules};
+  for (let value of values) _webCssAppendRule(rules, value);
+  return rules;
+}
+
+fn _webCssSheet(...rulesList) {
+  return {
+    __web_css_node: true,
+    kind: :sheet,
+    rules: _webCssNormalizeRules(toArray(rulesList))
+  };
+}
+
+fn _webCssAtPrelude(value, label) {
+  let out = str(value).trim();
+  if (out == "") _webCssError(label + " may not be empty");
+  if (out.contains("{") or out.contains("}") or out.contains(";")) {
+    _webCssError(label + " contains structural punctuation");
+  }
+  return out;
+}
+
+fn _webCssGroup(kind, prelude, rules) {
+  return {
+    __web_css_node: true,
+    kind,
+    prelude: _webCssAtPrelude(prelude, "CSS at-rule prelude"),
+    rules
+  };
+}
+
+fn _webCssMedia(query, ...rulesList) {
+  return _webCssGroup(:media, query, _webCssNormalizeRules(toArray(rulesList)));
+}
+
+fn _webCssSupports(condition, ...rulesList) {
+  return _webCssGroup(:supports, condition, _webCssNormalizeRules(toArray(rulesList)));
+}
+
+fn _webCssContainer(condition, ...rulesList) {
+  return _webCssGroup(:container, condition, _webCssNormalizeRules(toArray(rulesList)));
+}
+
+fn _webCssValidKeyframesName(name) {
+  if (name == "") return false;
+  let first = name.charAt(0);
+  if (!_webCssAsciiLetter(first) and first != "_" and first != "-") return false;
+  for (let i = 1; i < name.length; i++) {
+    let c = name.charAt(i);
+    if (!_webCssAsciiLetter(c) and !_webCssAsciiDigit(c) and c != "_" and c != "-") return false;
+  }
+  return true;
+}
+
+fn _webCssKeyframeSelectorPart(value) {
+  let s = str(value).trim();
+  if (s == "from" or s == "to") return s;
+  if (!s.endsWith("%")) _webCssError("keyframe selector must be from, to, or a percentage");
+  let number = s.slice(0, s.length - 1);
+  if (number == "") _webCssError("invalid keyframe percentage");
+  for (let c of number) {
+    if (!_webCssAsciiDigit(c) and c != ".") _webCssError("invalid keyframe percentage: " + s);
+  }
+  return s;
+}
+
+fn _webCssKeyframe(selector, declarations) {
+  let parts = str(selector).split(",");
+  let normalized = [];
+  for (let part of parts) normalized.push(_webCssKeyframeSelectorPart(part));
+  return {
+    __web_css_node: true,
+    kind: :keyframe,
+    selector: normalized.join(","),
+    declarations: _webCssNormalizeDeclarations(declarations)
+  };
+}
+
+fn _webCssAppendKeyframe(out, value) {
+  if (value == null) return out;
+  if (type(value) == "array") {
+    for (let frame of value) _webCssAppendKeyframe(out, frame);
+    return out;
+  }
+  if (!_webCssIsNode(value) or value.kind != :keyframe) {
+    _webCssError("css.keyframes() children must be css.keyframe() values");
+  }
+  out.push(value);
+  return out;
+}
+
+fn _webCssKeyframes(name, ...framesList) {
+  let n = str(name);
+  if (!_webCssValidKeyframesName(n)) _webCssError("invalid keyframes name: " + repr(n));
+  let frames = [];
+  for (let frame of toArray(framesList)) _webCssAppendKeyframe(frames, frame);
+  if (frames.length == 0) _webCssError("css.keyframes() requires at least one keyframe");
+  return {
+    __web_css_node: true,
+    kind: :keyframes,
+    name: n,
+    frames
+  };
 }
 
 fn _webCssRenderDeclarations(entries) {
@@ -147,18 +247,24 @@ fn _webCssRenderDeclarations(entries) {
   return out;
 }
 
+fn _webCssRenderRules(rules) {
+  let out = "";
+  for (let rule of rules) out += _webCssRender(rule);
+  return out;
+}
+
 fn _webCssRender(node) {
-  if (!_webCssIsNode(node)) _webCssError("css.render() expects css.rule() or css.sheet()");
+  if (!_webCssIsNode(node)) _webCssError("css.render() expects a CSS node value");
 
   if (node.kind == :rule) {
     return node.selector + "{" + _webCssRenderDeclarations(node.declarations) + "}";
   }
-
-  if (node.kind == :sheet) {
-    let out = "";
-    for (let rule of node.rules) out += _webCssRender(rule);
-    return out;
-  }
+  if (node.kind == :sheet) return _webCssRenderRules(node.rules);
+  if (node.kind == :media) return "@media " + node.prelude + "{" + _webCssRenderRules(node.rules) + "}";
+  if (node.kind == :supports) return "@supports " + node.prelude + "{" + _webCssRenderRules(node.rules) + "}";
+  if (node.kind == :container) return "@container " + node.prelude + "{" + _webCssRenderRules(node.rules) + "}";
+  if (node.kind == :keyframe) return node.selector + "{" + _webCssRenderDeclarations(node.declarations) + "}";
+  if (node.kind == :keyframes) return "@keyframes " + node.name + "{" + _webCssRenderRules(node.frames) + "}";
 
   _webCssError("unknown CSS node kind: " + repr(node.kind));
 }
@@ -170,5 +276,10 @@ const webCss = {
   raw: _webCssRaw,
   rule: _webCssRule,
   sheet: _webCssSheet,
+  media: _webCssMedia,
+  supports: _webCssSupports,
+  container: _webCssContainer,
+  keyframe: _webCssKeyframe,
+  keyframes: _webCssKeyframes,
   render: _webCssRender
 };
