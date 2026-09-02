@@ -22,10 +22,6 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The migration was originally written with one exact-text replacement
-          # for the surface string lexer.  Anchor that edit on the semantic NUL
-          # rejection instead, while retaining assertions that we found exactly
-          # the lexer block we intend to replace.
           python3 - <<'PY'
           from pathlib import Path
 
@@ -38,9 +34,21 @@ jobs:
           mid=surface_text.find(marker)
           if mid < 0:
               raise SystemExit('surface string lexer NUL-rejection anchor missing')
-          a=surface_text.rfind('    if [[ $c == ', 0, mid)
+
+          # Find the outer string-literal branch, not the inner backslash branch.
+          lines=surface_text.splitlines(keepends=True)
+          offset=0
+          a=-1
+          for i,line in enumerate(lines):
+              next_offset=offset+len(line)
+              if offset < mid and line.startswith('    if [[ $c == ') and ' || $c == ' in line:
+                  nearby=''.join(lines[i:i+3])
+                  if 'q=$c' in nearby:
+                      a=offset
+              offset=next_offset
           if a < 0:
-              raise SystemExit('surface string lexer start anchor missing')
+              raise SystemExit('surface string lexer outer-branch anchor missing')
+
           end_marker='      sx_tok str "$buf" "$gap"; gap=0; continue\n    fi\n'
           b=surface_text.find(end_marker, mid)
           if b < 0:
@@ -49,8 +57,8 @@ jobs:
           old_block=surface_text[a:b]
           if 'unterminated string escape' not in old_block or 'case $esc in' not in old_block:
               raise SystemExit('surface lexer anchor found an unexpected block')
-          if old_block.count(marker) != 1:
-              raise SystemExit('surface lexer NUL-rejection anchor is ambiguous')
+          if old_block.count(marker) != 1 or old_block.count('q=$c') != 1:
+              raise SystemExit('surface lexer block is ambiguous')
           surface_path.write_text(surface_text[:a]+new+surface_text[b:])
           # All parser str tokens are now hex. There are two direct datum/primary cases.
           '''
@@ -67,8 +75,6 @@ jobs:
           bash tests/fast.sh
           bash tests/stdlib-parity.sh
 
-          # The migration mechanism is one-shot implementation scaffolding, not
-          # part of the language or build system.
           rm -rf .sync .github/workflows/apply-nul-strings.yml
 
           git config user.name 'github-actions[bot]'
