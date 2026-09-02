@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - '.sync/nul-transform.xz.b64'
+      - '.sync/apply-nul-strings.py'
       - '.github/workflows/apply-nul-strings.yml'
 
 permissions:
@@ -14,16 +14,65 @@ jobs:
   apply:
     if: ${{ github.actor != 'github-actions[bot]' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - name: Materialize migration source
+      - name: Apply and verify lossless strings
         shell: bash
         run: |
           set -euo pipefail
-          base64 -d .sync/nul-transform.xz.b64 | xz -d > .sync/apply-nul-strings.py
-          echo 'f83481561c5136e51642c0f549a27919966d1fb25cf1cd10af1c3283b5a9bfee  .sync/apply-nul-strings.py' | sha256sum -c -
+
+          # The migration was originally written with one exact-text replacement
+          # for the surface string lexer.  Anchor that edit on the semantic NUL
+          # rejection instead, while retaining assertions that we found exactly
+          # the lexer block we intend to replace.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('.sync/apply-nul-strings.py')
+          s = path.read_text()
+          needle = "rep('surface.sh',old,new)\n# All parser str tokens are now hex. There are two direct datum/primary cases.\n"
+          replacement = r'''surface_path=Path('surface.sh')
+          surface_text=surface_path.read_text()
+          marker='this reference implementation cannot store NUL in strings; use bytes'
+          mid=surface_text.find(marker)
+          if mid < 0:
+              raise SystemExit('surface string lexer NUL-rejection anchor missing')
+          a=surface_text.rfind('    if [[ $c == ', 0, mid)
+          if a < 0:
+              raise SystemExit('surface string lexer start anchor missing')
+          end_marker='      sx_tok str "$buf" "$gap"; gap=0; continue\n    fi\n'
+          b=surface_text.find(end_marker, mid)
+          if b < 0:
+              raise SystemExit('surface string lexer end anchor missing')
+          b += len(end_marker)
+          old_block=surface_text[a:b]
+          if 'unterminated string escape' not in old_block or 'case $esc in' not in old_block:
+              raise SystemExit('surface lexer anchor found an unexpected block')
+          if old_block.count(marker) != 1:
+              raise SystemExit('surface lexer NUL-rejection anchor is ambiguous')
+          surface_path.write_text(surface_text[:a]+new+surface_text[b:])
+          # All parser str tokens are now hex. There are two direct datum/primary cases.
+          '''
+          if s.count(needle) != 1:
+              raise SystemExit('migration surface replacement hook is missing or ambiguous')
+          path.write_text(s.replace(needle, replacement))
+          PY
+
+          python3 .sync/apply-nul-strings.py
+
+          bash -n blisp runtime.sh compiler.sh surface.sh layout.sh tests/*.sh
+          source tests/differential-lib.sh
+          parity_suite string-nul tests/string-nul.blx
+          bash tests/fast.sh
+          bash tests/stdlib-parity.sh
+
+          # The migration mechanism is one-shot implementation scaffolding, not
+          # part of the language or build system.
+          rm -rf .sync .github/workflows/apply-nul-strings.yml
+
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .sync/apply-nul-strings.py
-          git commit -m 'Materialize readable NUL string migration'
+          git add -A
+          git commit -m 'Represent embedded NUL losslessly in strings'
           git push
